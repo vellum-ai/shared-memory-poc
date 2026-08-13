@@ -93,6 +93,7 @@ export interface OperationSignal {
 }
 
 export const DEFAULT_PLUGIN_DIR = fileURLToPath(new URL("..", import.meta.url));
+const GIT_OAUTH_HELPER = fileURLToPath(new URL("../github-oauth-credential.sh", import.meta.url));
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -153,13 +154,24 @@ export async function runRepositoryGit(
   const { signal, allowedExitCodes = [0] } = options;
   checkCancellation(signal);
   try {
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: "0",
+      LC_ALL: "C",
+      ...options.env,
+    };
+    const existingGitConfigCount = Number.parseInt(env.GIT_CONFIG_COUNT ?? "0", 10);
+    const gitConfigCount = Number.isSafeInteger(existingGitConfigCount) && existingGitConfigCount >= 0
+      ? existingGitConfigCount
+      : 0;
+    env.GIT_CONFIG_COUNT = String(gitConfigCount + 2);
+    env[`GIT_CONFIG_KEY_${gitConfigCount}`] = "credential.helper";
+    env[`GIT_CONFIG_VALUE_${gitConfigCount}`] = GIT_OAUTH_HELPER;
+    env[`GIT_CONFIG_KEY_${gitConfigCount + 1}`] = "credential.useHttpPath";
+    env[`GIT_CONFIG_VALUE_${gitConfigCount + 1}`] = "true";
+
     const proc = Bun.spawn(["git", "-C", repoDir, ...args], {
-      env: {
-        ...process.env,
-        GIT_TERMINAL_PROMPT: "0",
-        LC_ALL: "C",
-        ...options.env,
-      },
+      env,
       stdin:
         typeof options.stdin === "string"
           ? Buffer.from(options.stdin, "utf8")

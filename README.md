@@ -60,6 +60,26 @@ portability convention, then, not a rule the substrate enforces on shared pages.
 Following it keeps the layout valid if that nesting ever changes. Uses of either
 name further down a path are fine.
 
+## GitHub OAuth authentication
+
+To use a private GitHub content repository without an SSH key:
+
+1. Connect the GitHub account to the assistant with managed OAuth.
+2. Configure `repoUrl` with an HTTPS URL such as
+   `https://github.com/your-org/your-shared-content.git`, not an SSH URL.
+3. Keep the bundled `github-oauth-credential.sh` executable.
+
+The helper asks the assistant for a short-lived `temp_clone_token` for the
+specific repository on each Git operation, and supplies it to Git as an
+`x-access-token` credential. It does not store the token. The connected account
+must be authorized to read the repository. A missing, expired, revoked, or
+insufficient OAuth connection causes the Git operation to fail normally.
+
+The helper is intended for a Vellum runtime. The daemon must be able to resolve
+`assistant` and `jq`; set `SHARED_MEMORY_ASSISTANT_BIN` and
+`SHARED_MEMORY_JQ_BIN` in the daemon environment when those executables are not
+on its default `PATH`.
+
 ## Runtime layout
 
 A deployed install lives at `$VELLUM_WORKSPACE_DIR/plugins/shared-memory/` and
@@ -87,6 +107,13 @@ The clone at `data/repo` is shared, so both halves have to respect the same
 rules.
 
 This plugin pulls with `git pull --rebase --autostash` on the configured branch.
+For GitHub HTTPS remotes, Git uses the bundled OAuth credential helper to obtain
+a short-lived credential from the assistant's connected GitHub account. No token
+is written to `config.json` or the repository clone. The helper requires the
+`assistant` CLI and `jq` to be available on the daemon's `PATH`; deployments with
+a restricted `PATH` can set `SHARED_MEMORY_ASSISTANT_BIN` and
+`SHARED_MEMORY_JQ_BIN` to executable names or absolute paths.
+
 It never commits and never pushes. The only other way it touches git history is
 the clone replacement described below, which throws a whole clone away rather
 than rewriting one.
