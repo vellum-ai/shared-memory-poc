@@ -23,6 +23,15 @@ markdown body. The file path with the `.md` extension removed becomes the page
 slug, and pages are ingested under the `shared/` slug prefix. So
 `concepts/team/oncall.md` becomes the page `shared/team/oncall`.
 
+The path becomes the slug, so the path has to be shaped like one. Every segment
+of it, meaning every directory name and the filename with `.md` removed, must
+match `[a-z0-9][a-z0-9-]*`. That is lowercase letters, digits and hyphens, with
+a letter or a digit first. Underscores and uppercase are not allowed. A file
+named `concepts/Team_Oncall.md` is rejected as invalid on every sync, and the
+only sign of it is a warning naming the slug. The other pages import as usual,
+so a file named this way can sit there being skipped indefinitely. Name it
+`concepts/team-oncall.md` instead.
+
 Recommended frontmatter:
 
 ```yaml
@@ -74,8 +83,8 @@ rules.
 
 This plugin pulls with `git pull --rebase --autostash` on the configured branch.
 It never commits and never pushes. The only other way it touches git history is
-the clone repair described below, which discards a clone rather than rewriting
-one.
+the clone replacement described below, which throws a whole clone away rather
+than rewriting one.
 
 The outbound half may create local commits in `data/repo` and push them, but it
 must leave the clone checked out on the configured branch.
@@ -88,24 +97,52 @@ sync.
 A rebase that an earlier run left half-finished blocks every pull after it, so
 sync aborts an in-progress rebase before it pulls.
 
+A leftover `.git/index.lock` blocks git the same way. Before it attempts any
+recovery, sync deletes that lock if it is more than 30 minutes old. No real git
+operation holds the lock that long, and at most one sync runs at a time, so a
+lock that old belongs to a run that was killed. A lock younger than 30 minutes
+may still belong to something working, so sync leaves it alone and tries again
+on the next tick.
+
 If the pull still fails, or the `branch` in `config.json` no longer matches the
-branch the clone was made from, sync repairs the clone by deleting `data/repo`
-and cloning again. It only does that when the clone holds no local work. Local
-work is any of three things:
+branch the clone is on, sync replaces the clone. It clones fresh into a
+temporary directory first and swaps that clone into place only once it has
+succeeded. If the fresh clone fails, the old clone is left exactly as it was and
+sync tries again on the next tick. There is no partial state at any point:
+`data/repo` is always either the clone you had or a complete new one. A network
+outage cannot leave the install without its skills.
+
+Sync replaces a clone only when it can prove the clone holds no local work.
+Local work is any of three things:
 
 - a commit on any local branch that is not on the remote, including one parked
   on a side branch that is not checked out;
 - a stash entry;
 - an uncommitted change, staged or not.
 
-If the clone holds any of them, sync keeps it, reports that the state needs
-manual resolution, and tries again on the next tick. The local work stays on
-disk for someone to land or drop, and the assistant keeps running on the content
-it already has.
+Proving all three absent takes a clone sync can read that way, and some clones
+cannot be read that way at all. A detached HEAD is on no branch. A checked-out
+branch with no upstream has no remote counterpart to compare against. In both
+cases sync cannot tell an unpushed commit from a pushed one, so it preserves the
+clone. Preservation means the clone was not proven free of local work, not that
+it is known to hold some: a detached HEAD with a clean tree holds nothing and is
+still preserved.
 
-A clone whose HEAD resolves to no commit never finished cloning and so cannot
-hold outbound work, and sync deletes and re-clones that one too as long as its
-tree is clean.
+A preserved clone is left untouched and sync says so:
+
+```
+shared-memory: cannot refresh <repo path>, so it is preserved untouched; it may hold local work or be in a state sync cannot judge, so inspect it with git status and resolve by hand
+```
+
+Whatever is on disk stays on disk for someone to land, drop or check out, and
+the assistant keeps running on the content it already has. Sync retries on every
+tick until the state resolves.
+
+A clone whose HEAD resolves to no commit never finished cloning, and a repo with
+no commits cannot be holding an unpushed one. Sync replaces that clone too, on
+the same conjuncts as the main rule minus the upstream check, which such a clone
+can never satisfy: no commit the remote does not have, no stash entry, and a
+clean tree.
 
 ### Failure semantics
 
@@ -123,6 +160,8 @@ nothing is imported and the watermark stays where it was. The next tick retries
 the same delta.
 
 ## Install
+
+### Concept-page memory
 
 Concept-page memory has to be active on the assistant first. Both
 `assistant memory ingest` and `assistant memory v2 reembed-skills` refuse to run
@@ -142,7 +181,9 @@ three keys and still has concept-page memory active. Two settings turn it off.
 and the reseed whatever the tier keys say. `memory.v2.enabled` set to `false`
 turns it off too, unless `memory.v3.live` is `true`.
 
-Then, for the proof of concept:
+### Steps
+
+For the proof of concept:
 
 1. Enable the `plugin-schedules` feature flag on the assistant. This talks to
    the running daemon, so do it before the next step.
@@ -151,6 +192,12 @@ Then, for the proof of concept:
 4. `cp config.example.json config.json` and set `repoUrl` to your content repo,
    and `branch` if it is not `main`.
 5. Start the daemon: `vellum wake`.
+
+[`docs/QA.md`](docs/QA.md) is the step-by-step runbook: it builds a throwaway
+content repo, installs the plugin against it, and verifies the whole path end to
+end. It also lists this version's known limitations.
+
+### Why the daemon goes down first
 
 The daemon is down for the clone on purpose. A running assistant commits its
 workspace by itself, on a heartbeat and again on shutdown, and the exclude line
@@ -162,10 +209,6 @@ An install done in the other order heals itself. On the next boot the init hook
 writes the exclude line and then untracks the path with `git rm --cached`, so
 the workspace stops recording changes under it. The commits already made keep
 their entry, which is harmless.
-
-[`docs/QA.md`](docs/QA.md) is the step-by-step runbook: it builds a throwaway
-content repo, installs the plugin against it, and verifies the whole path end to
-end. It also lists this version's known limitations.
 
 ## Working on the plugin
 
