@@ -39,6 +39,7 @@ export interface RepositoryConfig {
 
 export interface RepositoryRevision {
   repoDir: string;
+  repoUrl: string;
   branch: string;
   expectedHead: string;
   effectivePolicy: EffectivePolicy;
@@ -55,6 +56,12 @@ export interface ConceptMatch {
   truncated: boolean;
 }
 
+export interface ConceptTreeEntry {
+  mode: "100644" | "100755";
+  oid: string;
+  size: number;
+}
+
 export class ToolRepositoryError extends Error {
   constructor(
     readonly code: string,
@@ -65,9 +72,22 @@ export class ToolRepositoryError extends Error {
   }
 }
 
-interface GitResult {
+export interface GitResult {
   exitCode: number;
   stdout: Buffer;
+}
+
+export interface RepositoryGitOptions {
+  signal?: AbortSignal;
+  allowedExitCodes?: readonly number[];
+  allowFailure?: boolean;
+  stdin?: string | Uint8Array;
+  env?: Record<string, string | undefined>;
+}
+
+export interface OperationSignal {
+  signal: AbortSignal;
+  dispose: () => void;
 }
 
 export const DEFAULT_PLUGIN_DIR = fileURLToPath(new URL("..", import.meta.url));
@@ -89,7 +109,7 @@ function decodeText(buffer: Buffer, label: string): string {
 }
 
 function abortError(): ToolRepositoryError {
-  return new ToolRepositoryError("CANCELLED", "Shared memory inspection was cancelled.");
+  return new ToolRepositoryError("CANCELLED", "The shared memory operation was cancelled.");
 }
 
 function checkCancellation(signal?: AbortSignal): void {
@@ -98,12 +118,12 @@ function checkCancellation(signal?: AbortSignal): void {
   }
 }
 
-async function runGit(
+export async function runRepositoryGit(
   repoDir: string,
   args: string[],
-  signal?: AbortSignal,
-  allowedExitCodes: readonly number[] = [0],
+  options: RepositoryGitOptions = {},
 ): Promise<GitResult> {
+  const { signal, allowedExitCodes = [0] } = options;
   checkCancellation(signal);
   try {
     const proc = Bun.spawn(["git", "-C", repoDir, ...args], {
@@ -111,7 +131,12 @@ async function runGit(
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
         LC_ALL: "C",
+        ...options.env,
       },
+      stdin:
+        typeof options.stdin === "string"
+          ? Buffer.from(options.stdin, "utf8")
+          : (options.stdin ?? "ignore"),
       stdout: "pipe",
       stderr: "pipe",
       signal,
@@ -125,7 +150,7 @@ async function runGit(
       new Response(proc.stderr).arrayBuffer(),
     ]);
     checkCancellation(signal);
-    if (!allowedExitCodes.includes(exitCode)) {
+    if (!options.allowFailure && !allowedExitCodes.includes(exitCode)) {
       throw new ToolRepositoryError(
         "REPOSITORY_ERROR",
         `Git could not complete ${args[0] ?? "the requested operation"}.`,
@@ -142,8 +167,29 @@ async function runGit(
     if (error instanceof ToolRepositoryError) {
       throw error;
     }
-    throw new ToolRepositoryError("REPOSITORY_ERROR", "Git could not inspect shared memory.");
+    throw new ToolRepositoryError("REPOSITORY_ERROR", "Git could not access shared memory.");
   }
+}
+
+export function createOperationSignal(
+  upstream?: AbortSignal,
+  timeoutMs = 25 * 60 * 1_000,
+): OperationSignal {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (upstream?.aborted) {
+    abort();
+  } else {
+    upstream?.addEventListener("abort", abort, { once: true });
+  }
+  const timeout = setTimeout(abort, timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timeout);
+      upstream?.removeEventListener("abort", abort);
+    },
+  };
 }
 
 export async function readRepositoryConfig(pluginDir: string): Promise<RepositoryConfig> {
@@ -239,17 +285,16 @@ async function resolveRevision(
   signal?: AbortSignal,
 ): Promise<RepositoryRevision> {
   const repoDir = join(pluginDir, "data", "repo");
-  const branchCheck = await runGit(
+  const branchCheck = await runRepositoryGit(
     repoDir,
     ["check-ref-format", "--branch", config.branch],
-    signal,
-    [0, 1, 128],
+    { signal, allowedExitCodes: [0, 1, 128] },
   );
   if (branchCheck.exitCode !== 0) {
     throw new ToolRepositoryError("CONFIG_ERROR", "Shared memory branch is invalid.");
   }
   const origin = decodeText(
-    (await runGit(repoDir, ["remote", "get-url", "origin"], signal)).stdout,
+    (await runRepositoryGit(repoDir, ["remote", "get-url", "origin"], { signal })).stdout,
     "The configured Git origin",
   ).trim();
   if (origin !== config.repoUrl) {
@@ -260,7 +305,11 @@ async function resolveRevision(
   }
 
   const branch = decodeText(
-    (await runGit(repoDir, ["symbolic-ref", "--quiet", "--short", "HEAD"], signal)).stdout,
+    (
+      await runRepositoryGit(repoDir, ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+        signal,
+      })
+    ).stdout,
     "The checked-out Git branch",
   ).trim();
   if (branch !== config.branch) {
@@ -270,18 +319,23 @@ async function resolveRevision(
     );
   }
 
-  await runGit(
+  await runRepositoryGit(
     repoDir,
     ["fetch", "--quiet", "--no-tags", "origin", `refs/heads/${config.branch}`],
-    signal,
+    { signal },
   );
   const expectedHead = decodeText(
-    (await runGit(repoDir, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"], signal)).stdout,
+    (
+      await runRepositoryGit(repoDir, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"], {
+        signal,
+      })
+    ).stdout,
     "The fetched Git revision",
   ).trim();
 
   return {
     repoDir,
+    repoUrl: config.repoUrl,
     branch: config.branch,
     expectedHead,
     effectivePolicy: {
@@ -308,21 +362,24 @@ export async function withRepositoryRevision<T>(
   }
 }
 
-async function readConcept(
+export async function findConceptTreeEntry(
   revision: RepositoryRevision,
   path: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<ConceptTreeEntry | null> {
   const validated = validateConceptPath(path);
-  const tree = await runGit(
+  const tree = await runRepositoryGit(
     revision.repoDir,
     ["ls-tree", "-l", "-z", revision.expectedHead, "--", validated],
-    signal,
+    { signal },
   );
   const record = decodeText(tree.stdout, `The Git entry for ${validated}`).replace(/\0$/, "");
   const match = /^(\d{6}) (\w+) ([0-9a-f]+)\s+(-|\d+)\t(.+)$/.exec(record);
+  if (record.length === 0) {
+    return null;
+  }
   if (!match || match[5] !== validated) {
-    throw new ToolRepositoryError("PATH_NOT_FOUND", `No shared concept exists at ${validated}.`);
+    throw new ToolRepositoryError("REPOSITORY_ERROR", `Git could not resolve ${validated}.`);
   }
   if ((match[1] !== "100644" && match[1] !== "100755") || match[2] !== "blob") {
     throw new ToolRepositoryError("PATH_ERROR", `${validated} is not a regular Markdown file.`);
@@ -335,13 +392,26 @@ async function readConcept(
       `${validated} exceeds the ${MAX_CONCEPT_FILE_BYTES}-byte inspection limit.`,
     );
   }
+  return { mode: match[1] as ConceptTreeEntry["mode"], oid: match[3], size };
+}
 
-  const blob = await runGit(
+async function readConcept(
+  revision: RepositoryRevision,
+  path: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const validated = validateConceptPath(path);
+  const entry = await findConceptTreeEntry(revision, validated, signal);
+  if (!entry) {
+    throw new ToolRepositoryError("PATH_NOT_FOUND", `No shared concept exists at ${validated}.`);
+  }
+
+  const blob = await runRepositoryGit(
     revision.repoDir,
-    ["cat-file", "blob", match[3]],
-    signal,
+    ["cat-file", "blob", entry.oid],
+    { signal },
   );
-  if (blob.stdout.length !== size) {
+  if (blob.stdout.length !== entry.size) {
     throw new ToolRepositoryError("REPOSITORY_ERROR", `Git returned an incomplete ${validated}.`);
   }
   const content = decodeText(blob.stdout, validated);
@@ -401,7 +471,7 @@ export async function searchConcepts(
   query: string,
   signal?: AbortSignal,
 ): Promise<{ matches: ConceptMatch[]; truncated: boolean }> {
-  const grep = await runGit(
+  const grep = await runRepositoryGit(
     revision.repoDir,
     [
       "grep",
@@ -417,8 +487,7 @@ export async function searchConcepts(
       ":(glob)concepts/*.md",
       ":(glob)concepts/**/*.md",
     ],
-    signal,
-    [0, 1],
+    { signal, allowedExitCodes: [0, 1] },
   );
   if (grep.exitCode === 1 || grep.stdout.length === 0) {
     return { matches: [], truncated: false };

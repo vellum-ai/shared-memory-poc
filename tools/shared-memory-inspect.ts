@@ -11,6 +11,7 @@ import {
   validateConceptPaths,
 } from "../src/concept-path.js";
 import {
+  createOperationSignal,
   DEFAULT_PLUGIN_DIR,
   HARD_NON_PERSONAL_BASELINE,
   MAX_QUERY_BYTES,
@@ -30,8 +31,6 @@ interface InspectPathsInput {
 }
 
 type InspectInput = InspectQueryInput | InspectPathsInput;
-
-const INSPECTION_TIMEOUT_MS = 25 * 60 * 1_000;
 
 function errorResult(code: string, message: string): ToolExecutionResult {
   return {
@@ -66,33 +65,12 @@ function parseInput(input: Record<string, unknown>): InspectInput {
   return { paths: validateConceptPaths(input.paths) };
 }
 
-function inspectionSignal(upstream?: AbortSignal): {
-  signal: AbortSignal;
-  dispose: () => void;
-} {
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  if (upstream?.aborted) {
-    abort();
-  } else {
-    upstream?.addEventListener("abort", abort, { once: true });
-  }
-  const timeout = setTimeout(abort, INSPECTION_TIMEOUT_MS);
-  return {
-    signal: controller.signal,
-    dispose: () => {
-      clearTimeout(timeout);
-      upstream?.removeEventListener("abort", abort);
-    },
-  };
-}
-
 export async function inspectSharedMemory(
   rawInput: Record<string, unknown>,
   ctx: ToolContext,
   pluginDir = DEFAULT_PLUGIN_DIR,
 ): Promise<ToolExecutionResult> {
-  const deadline = inspectionSignal(ctx.signal);
+  const deadline = createOperationSignal(ctx.signal);
   try {
     const input = parseInput(rawInput);
     const result = await withRepositoryRevision(pluginDir, deadline.signal, async (revision) => {
