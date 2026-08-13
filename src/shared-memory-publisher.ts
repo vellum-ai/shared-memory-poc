@@ -376,12 +376,20 @@ function requireExpectedPolicy(
   }
 }
 
-async function requireCurrentPolicy(
+async function requireCurrentConfiguration(
   expectedPolicyFingerprint: string,
+  revision: RepositoryRevision,
   pluginDir: string,
 ): Promise<void> {
   const config = await readRepositoryConfig(pluginDir);
   const effectivePolicy = createEffectivePolicy(config.sharingGuidance);
+  if (config.repoUrl !== revision.repoUrl || config.branch !== revision.branch) {
+    throw new SharedMemoryPublishError(
+      "REPOSITORY_MISMATCH",
+      "The shared-memory repository target changed after inspection. Inspect again before publishing.",
+      { effectivePolicy },
+    );
+  }
   if (createPolicyFingerprint(effectivePolicy) !== expectedPolicyFingerprint) {
     throw new SharedMemoryPublishError(
       "STALE_POLICY",
@@ -567,7 +575,11 @@ async function publishAtRevision(
   const freshHead = await fetchRemoteHead(revision, signal);
   requireExpectedHead(proposal.expectedHead, freshHead, revision.effectivePolicy);
   if (changed.length === 0) {
-    await requireCurrentPolicy(proposal.expectedPolicyFingerprint, pluginDir);
+    await requireCurrentConfiguration(
+      proposal.expectedPolicyFingerprint,
+      revision,
+      pluginDir,
+    );
     return {
       branch: revision.branch,
       previousHead: proposal.expectedHead,
@@ -579,7 +591,11 @@ async function publishAtRevision(
   }
 
   const commitSha = await createCommit(revision, proposal, changed, pluginDir, signal);
-  await requireCurrentPolicy(proposal.expectedPolicyFingerprint, pluginDir);
+  await requireCurrentConfiguration(
+    proposal.expectedPolicyFingerprint,
+    revision,
+    pluginDir,
+  );
   let pushExitCode: number | undefined;
   let pushUncertain = false;
   try {

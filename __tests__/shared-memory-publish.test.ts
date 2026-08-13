@@ -431,6 +431,31 @@ describe("atomic shared memory publishing", () => {
     expect(remoteHead(fixture)).toBe(fixture.expectedHead);
   });
 
+  test("revalidates the repository target immediately before pushing", async () => {
+    const fixture = makeFixture();
+    const replacementDir = join(fixture.root, "replacement-config");
+    const replacementConfig = join(replacementDir, "config.json");
+    writeConfig(replacementDir, `${fixture.repoUrl}-other`, fixture.branch);
+    writePostIndexChangeHook(
+      fixture.checkout,
+      `if [[ -f "${replacementConfig}" ]]; then mv "${replacementConfig}" "${join(fixture.pluginDir, "config.json")}"; fi`,
+    );
+
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        {
+          path: "concepts/deploy-runbook.md",
+          content: `${DEPLOY_CONTENT}\nRepository-race update.\n`,
+        },
+      ]),
+    );
+
+    expect(result.reply.isError).toBe(true);
+    expect(errorCode(result.body)).toBe("REPOSITORY_MISMATCH");
+    expect(remoteHead(fixture)).toBe(fixture.expectedHead);
+  });
+
   test("prevents two assistants inspected at the same head from overwriting each other", async () => {
     const fixture = makeFixture({ sharingGuidance: "Share release runbooks only." });
     const second = cloneInstall(fixture, "shared-memory-second", "Share release runbooks only.");
