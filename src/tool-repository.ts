@@ -297,10 +297,23 @@ async function resolveRevision(
     (await runRepositoryGit(repoDir, ["remote", "get-url", "origin"], { signal })).stdout,
     "The configured Git origin",
   ).trim();
-  if (origin !== config.repoUrl) {
+  const pushUrls = decodeText(
+    (
+      await runRepositoryGit(
+        repoDir,
+        ["remote", "get-url", "--push", "--all", "origin"],
+        { signal },
+      )
+    ).stdout,
+    "The configured Git push origin",
+  )
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean);
+  if (origin !== config.repoUrl || pushUrls.length !== 1 || pushUrls[0] !== config.repoUrl) {
     throw new ToolRepositoryError(
       "REPOSITORY_MISMATCH",
-      "The local shared-memory clone origin does not match config.json.",
+      "The local shared-memory clone fetch or push origin does not match config.json.",
     );
   }
 

@@ -9,6 +9,7 @@ import {
   validateConceptPath,
 } from "./concept-path.js";
 import {
+  createOperationSignal,
   type EffectivePolicy,
   findConceptTreeEntry,
   MAX_EXACT_CONTENT_BYTES,
@@ -19,6 +20,8 @@ import {
 } from "./tool-repository.js";
 
 export const MAX_COMMIT_MESSAGE_BYTES = 120;
+
+const PUSH_FOLLOWUP_TIMEOUT_MS = 30_000;
 
 export interface SharedMemoryUpsert {
   path: string;
@@ -371,6 +374,52 @@ async function isAncestor(
   return result.exitCode === 0;
 }
 
+async function verifyPushOutcome(
+  revision: RepositoryRevision,
+  commitSha: string,
+): Promise<{ remoteHead: string; containsCommit: boolean }> {
+  const deadline = createOperationSignal(undefined, PUSH_FOLLOWUP_TIMEOUT_MS);
+  try {
+    const remoteHead = await fetchRemoteHead(revision, deadline.signal);
+    return {
+      remoteHead,
+      containsCommit: await isAncestor(
+        revision.repoDir,
+        commitSha,
+        remoteHead,
+        deadline.signal,
+      ),
+    };
+  } catch {
+    throw new SharedMemoryPublishError(
+      "PUSH_UNKNOWN",
+      "The push result could not be verified. Inspect the repository before retrying.",
+      { effectivePolicy: revision.effectivePolicy, commitSha },
+    );
+  } finally {
+    deadline.dispose();
+  }
+}
+
+async function updateCheckoutAfterPush(
+  revision: RepositoryRevision,
+  remoteHead: string,
+): Promise<boolean> {
+  const deadline = createOperationSignal(undefined, PUSH_FOLLOWUP_TIMEOUT_MS);
+  try {
+    const checkout = await runRepositoryGit(
+      revision.repoDir,
+      ["merge", "--ff-only", "--quiet", remoteHead],
+      { signal: deadline.signal, allowFailure: true },
+    );
+    return checkout.exitCode === 0;
+  } catch {
+    return false;
+  } finally {
+    deadline.dispose();
+  }
+}
+
 function githubCommitUrl(repoUrl: string, commitSha: string): string | undefined {
   const scp = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(repoUrl);
   if (scp) {
@@ -420,24 +469,38 @@ async function publishAtRevision(
   }
 
   const commitSha = await createCommit(revision, proposal, changed, pluginDir, signal);
-  const push = await runRepositoryGit(
-    revision.repoDir,
-    ["push", "--porcelain", "origin", `${commitSha}:refs/heads/${revision.branch}`],
-    { signal, allowFailure: true },
-  );
+  let pushExitCode: number | undefined;
+  let pushUncertain = false;
+  try {
+    const push = await runRepositoryGit(
+      revision.repoDir,
+      ["push", "--porcelain", "origin", `${commitSha}:refs/heads/${revision.branch}`],
+      { signal, allowFailure: true },
+    );
+    pushExitCode = push.exitCode;
+  } catch (error) {
+    if (!(error instanceof ToolRepositoryError)) {
+      throw error;
+    }
+    pushUncertain = true;
+  }
 
   let remoteHead = commitSha;
-  if (push.exitCode !== 0) {
-    try {
-      remoteHead = await fetchRemoteHead(revision, signal);
-    } catch {
-      throw new SharedMemoryPublishError(
-        "PUSH_UNKNOWN",
-        "The push result could not be verified. Inspect the repository before retrying.",
-        { effectivePolicy: revision.effectivePolicy, commitSha },
-      );
-    }
-    if (!(await isAncestor(revision.repoDir, commitSha, remoteHead, signal))) {
+  if (pushUncertain || pushExitCode !== 0) {
+    const verification = await verifyPushOutcome(revision, commitSha);
+    remoteHead = verification.remoteHead;
+    if (!verification.containsCommit) {
+      if (pushUncertain) {
+        throw new SharedMemoryPublishError(
+          "PUSH_UNKNOWN",
+          "The push result could not be verified. Inspect the repository before retrying.",
+          {
+            effectivePolicy: revision.effectivePolicy,
+            observedHead: remoteHead,
+            commitSha,
+          },
+        );
+      }
       if (remoteHead !== proposal.expectedHead) {
         throw new SharedMemoryPublishError(
           "STALE_HEAD",
@@ -453,11 +516,7 @@ async function publishAtRevision(
     }
   }
 
-  const checkout = await runRepositoryGit(
-    revision.repoDir,
-    ["merge", "--ff-only", "--quiet", remoteHead],
-    { signal, allowFailure: true },
-  );
+  const checkoutUpdated = await updateCheckoutAfterPush(revision, remoteHead);
   const result: SharedMemoryPublishResult = {
     branch: revision.branch,
     previousHead: proposal.expectedHead,
@@ -465,7 +524,7 @@ async function publishAtRevision(
     changedPaths: changed.map(({ path }) => path),
     noop: false,
     commitSha,
-    checkoutUpdated: checkout.exitCode === 0,
+    checkoutUpdated,
   };
   const commitUrl = githubCommitUrl(revision.repoUrl, commitSha);
   if (commitUrl) {

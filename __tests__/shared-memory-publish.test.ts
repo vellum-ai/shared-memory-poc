@@ -176,6 +176,16 @@ function writePrePushHook(checkout: string, script: string): void {
   chmodSync(hook, 0o755);
 }
 
+async function waitForFile(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 250; attempt += 1) {
+    if (existsSync(path)) {
+      return;
+    }
+    await Bun.sleep(20);
+  }
+  throw new Error(`Timed out waiting for ${path}`);
+}
+
 function advanceFromClone(
   fixture: Fixture,
   name: string,
@@ -366,6 +376,70 @@ describe("atomic shared memory publishing", () => {
     );
   });
 
+  test("verifies an interrupted push that reached the remote", async () => {
+    const fixture = makeFixture();
+    const pushed = join(fixture.root, "push-complete");
+    const release = join(fixture.root, "release-hook");
+    writePrePushHook(
+      fixture.checkout,
+      `read -r _ local_sha _ _\ngit push --no-verify -q "${fixture.repoUrl}" "${"$"}{local_sha}:refs/heads/${fixture.branch}"\ntouch "${pushed}"\nwhile [[ ! -f "${release}" ]]; do sleep 0.05; done\nexit 1`,
+    );
+    const controller = new AbortController();
+    const pending = publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        {
+          path: "concepts/deploy-runbook.md",
+          content: `${DEPLOY_CONTENT}\nInterrupted push update.\n`,
+        },
+      ]),
+      controller.signal,
+    );
+
+    await waitForFile(pushed);
+    controller.abort();
+    writeFile(release, "release\n");
+    const result = await pending;
+
+    expect(result.reply.isError).toBe(false);
+    expect(remoteHead(fixture)).toBe(result.body.commitSha as string);
+    expect(remoteFile(fixture, "concepts/deploy-runbook.md")).toContain(
+      "Interrupted push update.",
+    );
+  });
+
+  test("reports an interrupted push with an unknown outcome and commit SHA", async () => {
+    const fixture = makeFixture();
+    const started = join(fixture.root, "push-started");
+    const release = join(fixture.root, "release-hook");
+    writePrePushHook(
+      fixture.checkout,
+      `touch "${started}"\nwhile [[ ! -f "${release}" ]]; do sleep 0.05; done\nexit 1`,
+    );
+    const controller = new AbortController();
+    const pending = publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        {
+          path: "concepts/deploy-runbook.md",
+          content: `${DEPLOY_CONTENT}\nCancelled push update.\n`,
+        },
+      ]),
+      controller.signal,
+    );
+
+    await waitForFile(started);
+    controller.abort();
+    writeFile(release, "release\n");
+    const result = await pending;
+
+    expect(result.reply.isError).toBe(true);
+    expect(errorCode(result.body)).toBe("PUSH_UNKNOWN");
+    expect(result.body.commitSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(result.body.observedHead).toBe(fixture.expectedHead);
+    expect(remoteHead(fixture)).toBe(fixture.expectedHead);
+  });
+
   test("rejects invalid paths, duplicates, and oversized content before publication", async () => {
     const fixture = makeFixture();
     const attempts = [
@@ -405,7 +479,7 @@ describe("atomic shared memory publishing", () => {
     expect(remoteHead(fixture)).toBe(symlinkHead);
   });
 
-  test("fails closed for dirty state, an origin mismatch, and an active lock", async () => {
+  test("fails closed for dirty state, origin mismatches, and an active lock", async () => {
     const dirty = makeFixture();
     writeFile(join(dirty.checkout, "local-note.txt"), "local work\n");
     const dirtyResult = await publish(
@@ -426,6 +500,36 @@ describe("atomic shared memory publishing", () => {
       ]),
     );
     expect(errorCode(mismatchResult.body)).toBe("REPOSITORY_MISMATCH");
+
+    const pushMismatch = makeFixture();
+    runGit(pushMismatch.checkout, [
+      "remote",
+      "set-url",
+      "--push",
+      "origin",
+      `${pushMismatch.repoUrl}-other`,
+    ]);
+    const pushMismatchResult = await publish(
+      pushMismatch,
+      proposal(pushMismatch.expectedHead, [
+        { path: "concepts/deploy-runbook.md", content: `${DEPLOY_CONTENT}\nUpdate.\n` },
+      ]),
+    );
+    expect(errorCode(pushMismatchResult.body)).toBe("REPOSITORY_MISMATCH");
+
+    const pushRewrite = makeFixture();
+    runGit(pushRewrite.checkout, [
+      "config",
+      `url.${pushRewrite.repoUrl}-other.pushInsteadOf`,
+      pushRewrite.repoUrl,
+    ]);
+    const pushRewriteResult = await publish(
+      pushRewrite,
+      proposal(pushRewrite.expectedHead, [
+        { path: "concepts/deploy-runbook.md", content: `${DEPLOY_CONTENT}\nUpdate.\n` },
+      ]),
+    );
+    expect(errorCode(pushRewriteResult.body)).toBe("REPOSITORY_MISMATCH");
 
     const busy = makeFixture();
     const lock = join(busy.pluginDir, "data", "sync.lock");
