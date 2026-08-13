@@ -1,5 +1,6 @@
 {
   "repoUrl": "git@github.com:your-org/your-shared-content.git",
   "branch": "main",
+  "sharingGuidance": "Share architecture decisions, runbooks, team conventions, and reusable troubleshooting.",
   "digest": { "summary": "deterministic" }
 }

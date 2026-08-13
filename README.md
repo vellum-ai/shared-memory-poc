@@ -300,8 +300,18 @@ For the proof of concept:
 2. Stop the daemon: `vellum sleep --wait 60s`.
 3. Clone or copy this repo into `$VELLUM_WORKSPACE_DIR/plugins/shared-memory/`.
 4. `cp config.example.json config.json` and set `repoUrl` to your content repo,
-   and `branch` if it is not `main`.
+   `branch` if it is not `main`, and use optional `sharingGuidance` to describe
+   the kinds of non-personal team knowledge you want to share.
 5. Start the daemon: `vellum wake`.
+
+`sharingGuidance` can focus or narrow sharing to topics such as architecture
+decisions, runbooks, team conventions, and reusable troubleshooting. Omitting it
+uses the plugin's default non-personal policy. Guidance cannot permit medical,
+health, mental health, relationship, financial, identity, contact, HR,
+performance, preference, habit, private communication, secret, credential, or
+other information about an identifiable person. When useful work knowledge is
+mixed with personal context, only an abstract, impersonal team rule may be
+shared.
 
 [`docs/QA.md`](docs/QA.md) is the step-by-step runbook: it builds a throwaway
 content repo, installs the plugin against it, and verifies the whole path end to
