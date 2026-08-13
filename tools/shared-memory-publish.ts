@@ -1,8 +1,9 @@
-import type {
-  RiskLevel,
-  ToolContext,
-  ToolDefinition,
-  ToolExecutionResult,
+import {
+  getAssistantName,
+  type RiskLevel,
+  type ToolContext,
+  type ToolDefinition,
+  type ToolExecutionResult,
 } from "@vellumai/plugin-api";
 
 import { ConceptPathError, MAX_CONCEPT_FILE_BYTES, MAX_EXACT_PATHS } from "../src/concept-path.js";
@@ -40,15 +41,27 @@ function errorResult(error: SharedMemoryPublishError): ToolExecutionResult {
   };
 }
 
+interface ExecuteSharedMemoryPublishOptions {
+  pluginDir?: string;
+  assistantName?: string | null;
+}
+
 export async function executeSharedMemoryPublish(
   rawInput: Record<string, unknown>,
   ctx: ToolContext,
-  pluginDir = DEFAULT_PLUGIN_DIR,
+  {
+    pluginDir = DEFAULT_PLUGIN_DIR,
+    assistantName = getAssistantName(),
+  }: ExecuteSharedMemoryPublishOptions = {},
 ): Promise<ToolExecutionResult> {
   const deadline = createOperationSignal(ctx.signal);
   try {
     const proposal = parsePublishProposal(rawInput);
-    const result = await publishSharedMemory(proposal, pluginDir, deadline.signal);
+    const result = await publishSharedMemory(proposal, {
+      pluginDir,
+      assistantName,
+      signal: deadline.signal,
+    });
     return { content: JSON.stringify(result), isError: false };
   } catch (error) {
     if (error instanceof ConceptPathError) {

@@ -146,8 +146,13 @@ async function publish(
   fixture: Pick<Fixture, "pluginDir">,
   input: Record<string, unknown>,
   signal?: AbortSignal,
+  assistantName: string | null = "Example Assistant",
 ): Promise<{ reply: ToolReply; body: Record<string, unknown> }> {
-  const reply = await executeSharedMemoryPublish(input, makeContext(signal), fixture.pluginDir);
+  const reply = await executeSharedMemoryPublish(
+    input,
+    makeContext(signal),
+    { pluginDir: fixture.pluginDir, assistantName },
+  );
   return { reply, body: JSON.parse(reply.content) as Record<string, unknown> };
 }
 
@@ -305,7 +310,7 @@ describe("atomic shared memory publishing", () => {
         "--format=%an%n%ae%n%cn%n%ce",
         commitSha,
       ]).trim(),
-    ).toBe("Fixture\nfixture@example.com\nVellum Assistant\nassistant@vellum.ai");
+    ).toBe("Fixture\nfixture@example.com\nExample Assistant\nassistant@vellum.ai");
     expect(remoteFile(fixture, "concepts/deploy-runbook.md")).toBe(updatedDeploy);
     expect(remoteFile(fixture, "concepts/architecture/event-routing.md")).toContain(
       "Route invalidations through the gateway.",
@@ -515,7 +520,7 @@ describe("atomic shared memory publishing", () => {
       proposal(fixture.expectedHead, [
         {
           path: "concepts/deploy-runbook.md",
-          content: `${DEPLOY_CONTENT}\nMissing identity update.\n`,
+          content: `${DEPLOY_CONTENT}\nMissing author update.\n`,
         },
       ]),
     );
@@ -525,15 +530,13 @@ describe("atomic shared memory publishing", () => {
     expect(remoteHead(fixture)).toBe(fixture.expectedHead);
   });
 
-  test("prefers the author block in config.json over Git config", async () => {
+  test("uses the configured author and assistant committer", async () => {
     const fixture = makeFixture();
-    // The checkout carries a Git identity too; the config block must win, so
-    // an inherited identity can never misattribute a publication.
     runGit(fixture.checkout, ["config", "user.name", "Wrong Identity"]);
     runGit(fixture.checkout, ["config", "user.email", "wrong@example.com"]);
     writeConfig(fixture.pluginDir, fixture.repoUrl, fixture.branch, undefined, {
-      name: "Aaron Levin",
-      email: "aaron@vellum.ai",
+      name: "Example User",
+      email: "user@example.com",
     });
 
     const result = await publish(
@@ -541,7 +544,7 @@ describe("atomic shared memory publishing", () => {
       proposal(fixture.expectedHead, [
         {
           path: "concepts/deploy-runbook.md",
-          content: `${DEPLOY_CONTENT}\nConfig author update.\n`,
+          content: `${DEPLOY_CONTENT}\nAuthor and assistant update.\n`,
         },
       ]),
     );
@@ -556,14 +559,14 @@ describe("atomic shared memory publishing", () => {
         "--format=%an%n%ae%n%cn%n%ce",
         result.body.commitSha as string,
       ]).trim(),
-    ).toBe("Aaron Levin\naaron@vellum.ai\nVellum Assistant\nassistant@vellum.ai");
+    ).toBe("Example User\nuser@example.com\nExample Assistant\nassistant@vellum.ai");
   });
 
   test("rejects an author block that is not a plain identity", async () => {
     const fixture = makeFixture();
     writeConfig(fixture.pluginDir, fixture.repoUrl, fixture.branch, undefined, {
-      name: "Aaron <script>",
-      email: "aaron@vellum.ai",
+      name: "Example <User>",
+      email: "user@example.com",
     });
 
     const result = await publish(
@@ -603,10 +606,58 @@ describe("atomic shared memory publishing", () => {
         fixture.remote,
         "show",
         "-s",
-        "--format=%an%n%ae",
+        "--format=%an%n%ae%n%cn%n%ce",
         result.body.commitSha as string,
       ]).trim(),
-    ).toBe("Example User\nuser@example.com");
+    ).toBe("Example User\nuser@example.com\nExample Assistant\nassistant@vellum.ai");
+  });
+
+  test("falls back to the generic committer when the assistant has no display name", async () => {
+    const fixture = makeFixture();
+
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        {
+          path: "concepts/deploy-runbook.md",
+          content: `${DEPLOY_CONTENT}\nFallback committer update.\n`,
+        },
+      ]),
+      undefined,
+      null,
+    );
+
+    expect(result.reply.isError).toBe(false);
+    expect(
+      runGit(fixture.root, [
+        "--git-dir",
+        fixture.remote,
+        "show",
+        "-s",
+        "--format=%an%n%ae%n%cn%n%ce",
+        result.body.commitSha as string,
+      ]).trim(),
+    ).toBe("Fixture\nfixture@example.com\nVellum Assistant\nassistant@vellum.ai");
+  });
+
+  test("rejects an unsafe assistant display name", async () => {
+    const fixture = makeFixture();
+
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        {
+          path: "concepts/deploy-runbook.md",
+          content: `${DEPLOY_CONTENT}\nInvalid assistant identity update.\n`,
+        },
+      ]),
+      undefined,
+      "Example <Assistant>",
+    );
+
+    expect(result.reply.isError).toBe(true);
+    expect(errorCode(result.body)).toBe("GIT_IDENTITY_INVALID");
+    expect(remoteHead(fixture)).toBe(fixture.expectedHead);
   });
 
   test("rejects a proposal when sharing guidance changed after inspection", async () => {

@@ -273,9 +273,6 @@ export async function readRepositoryConfig(pluginDir: string): Promise<Repositor
     }
   }
 
-  // Who publishes from this install. Commits are attributed to this identity,
-  // so digests can say which person changed what; the sync schedule fills it
-  // in from the guardian contact when it is absent.
   let author: CommitAuthor | null = null;
   if (raw.author !== undefined) {
     if (

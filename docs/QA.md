@@ -860,10 +860,8 @@ These are known and deliberate in this version, not defects to file.
   mode it wakes every six hours, finds it has nothing to do, and stops. Disable
   the row with `assistant schedules disable <id>` if that matters;
   the override survives upgrades.
-- **Publishing needs an author identity.** Commits are attributed through the
-  `author` block in `config.json`, which sync derives from the guardian
-  contact's name and primary email when the block is missing. A test assistant
-  with no guardian email keeps `GIT_IDENTITY_MISSING` until you write the
-  block yourself. Do not point every install at one shared identity: the
-  digest's per-person attribution is only as good as these author blocks. See
-  [Publishing identity](../README.md#publishing-identity) in the README.
+- **Publishing records an author and an assistant.** The Git author comes from
+  the `author` block in `config.json`, which sync can derive from the guardian
+  contact. The Git committer uses the assistant display name with a generic
+  email, falling back to `Vellum Assistant` when unnamed. See [Publishing
+  identity](../README.md#publishing-identity) in the README.
