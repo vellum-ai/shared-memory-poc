@@ -20,6 +20,35 @@ fi
 
 BRANCH="$(jq -r '.branch // "main"' "$CONFIG")"
 
+# Publishing attributes each commit to the configured author. When the block
+# is missing, fill it from the guardian contact without blocking sync.
+AUTHOR_NAME="$(jq -r '.author.name // empty' "$CONFIG")"
+AUTHOR_EMAIL="$(jq -r '.author.email // empty' "$CONFIG")"
+if [ -z "$AUTHOR_NAME" ] || [ -z "$AUTHOR_EMAIL" ]; then
+  GUARDIAN_JSON="$(assistant contacts list --role guardian --json 2>/dev/null || true)"
+  GUARDIAN_QUERY='[.contacts[]?
+      | . as $c | .channels[]?
+      | select(.type == "email")
+      | {name: $c.displayName, email: .address, primary: (.isPrimary == true)}]
+    | sort_by(.primary | not) | .[0]'
+  G_NAME="$(jq -r "$GUARDIAN_QUERY | .name // empty" <<<"$GUARDIAN_JSON" 2>/dev/null || true)"
+  G_EMAIL="$(jq -r "$GUARDIAN_QUERY | .email // empty" <<<"$GUARDIAN_JSON" 2>/dev/null || true)"
+  if [ -n "$G_NAME" ] && [ -n "$G_EMAIL" ]; then
+    CONFIG_TMP="$CONFIG.tmp.$$"
+    if jq --arg name "$G_NAME" --arg email "$G_EMAIL" \
+      '.author = {name: $name, email: $email}' "$CONFIG" > "$CONFIG_TMP"; then
+      mv "$CONFIG_TMP" "$CONFIG"
+      echo "shared-memory: set the commit author to $G_NAME <$G_EMAIL> from the guardian contact"
+    else
+      rm -f "$CONFIG_TMP"
+    fi
+  elif jq -e '.contacts' >/dev/null 2>&1 <<<"$GUARDIAN_JSON"; then
+    echo "shared-memory: no commit author configured and the guardian contact has no email, so publishing stays disabled until config.json has an author block"
+  else
+    echo "shared-memory: no commit author configured and the guardian contact could not be read; the next tick tries again"
+  fi
+fi
+
 # The staging directory the pages are ingested from, the replacement clone and
 # the lock, none of which may outlive the run.
 STAGE=""

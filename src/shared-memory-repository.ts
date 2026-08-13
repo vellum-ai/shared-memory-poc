@@ -32,10 +32,16 @@ export interface EffectivePolicy {
   guidanceRule: string;
 }
 
+export interface CommitAuthor {
+  name: string;
+  email: string;
+}
+
 export interface RepositoryConfig {
   repoUrl: string;
   branch: string;
   sharingGuidance: string | null;
+  author: CommitAuthor | null;
 }
 
 export interface RepositoryRevision {
@@ -267,7 +273,38 @@ export async function readRepositoryConfig(pluginDir: string): Promise<Repositor
     }
   }
 
-  return { repoUrl: raw.repoUrl, branch, sharingGuidance };
+  let author: CommitAuthor | null = null;
+  if (raw.author !== undefined) {
+    if (
+      !isRecord(raw.author) ||
+      typeof raw.author.name !== "string" ||
+      typeof raw.author.email !== "string"
+    ) {
+      throw new SharedMemoryRepositoryError(
+        "CONFIG_ERROR",
+        "The author block requires name and email strings.",
+      );
+    }
+    const name = raw.author.name.trim();
+    const email = raw.author.email.trim();
+    if (
+      name.length === 0 ||
+      email.length === 0 ||
+      byteLength(name) > 255 ||
+      byteLength(email) > 255 ||
+      !email.includes("@") ||
+      /[\0-\x1f\x7f<>]/.test(name) ||
+      /[\0-\x1f\x7f<>]/.test(email)
+    ) {
+      throw new SharedMemoryRepositoryError(
+        "CONFIG_ERROR",
+        "The author name and email must be short plain text, and the email must contain @.",
+      );
+    }
+    author = { name, email };
+  }
+
+  return { repoUrl: raw.repoUrl, branch, sharingGuidance, author };
 }
 
 async function acquireLock(pluginDir: string): Promise<() => Promise<void>> {

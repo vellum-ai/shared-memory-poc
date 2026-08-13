@@ -237,7 +237,7 @@ not greeted with the repo's whole history. The same reset happens if the clone
 was replaced and no longer holds the old watermark.
 
 Attribution comes from the commits in the range, skipping merge commits, so a
-change is counted once under the assistant that made it. A skill counts as
+change is counted once under the person who authored it. A skill counts as
 added or removed only when its `SKILL.md` is; any other change under its
 directory is an update. A rename is reported as an update of the new name. An
 entity the same author both added and removed inside one range nets out to
@@ -271,12 +271,23 @@ notified once.
 
 ## Publishing identity
 
-Every commit the publish tool creates uses the assistant's configured display
-name for both the Git author and committer. The email is the generic
-`assistant@vellum.ai`, so publishing does not copy a person's contact details
-into the shared repository. Digests can therefore report which assistant made
-each change. If an assistant has no display name, the commit falls back to
-`Vellum Assistant`.
+Every commit records both the person responsible for the publication and the
+assistant that performed it. The Git author comes from the optional `author`
+block in `config.json`:
+
+```json
+{ "author": { "name": "Example User", "email": "user@example.com" } }
+```
+
+When the block is missing, the sync schedule fills it from the guardian
+contact's display name and primary email. A configured block is never
+overwritten, and it outranks inherited Git config. Publishing refuses with
+`GIT_IDENTITY_MISSING` when neither source provides an author.
+
+The Git committer uses the assistant's configured display name and the generic
+`assistant@vellum.ai` email. An unnamed assistant falls back to
+`Vellum Assistant`. Digests continue grouping changes by the human author,
+while Git history also shows which assistant committed them.
 
 ## Install
 

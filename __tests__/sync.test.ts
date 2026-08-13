@@ -35,6 +35,15 @@ const PRESERVE_MESSAGE =
 const FAKE_ASSISTANT = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$SM_TEST_CALLS"
 
+if [ "$1" = "contacts" ]; then
+  if [ -f "\${SM_TEST_CONTACTS:-}" ]; then
+    cat "$SM_TEST_CONTACTS"
+  else
+    printf '{"ok":true,"contacts":[]}\\n'
+  fi
+  exit 0
+fi
+
 waited=0
 while [ -f "\${SM_TEST_GATE:-}" ] && [ "$waited" -lt 200 ]; do
   sleep 0.1
@@ -119,6 +128,7 @@ interface Fixture {
   failFlag: string;
   garbageFlag: string;
   gateFlag: string;
+  contactsFile: string;
 }
 
 const roots: string[] = [];
@@ -142,10 +152,18 @@ function writeConfig(
   plugin: string,
   content: string,
   branch: string,
+  author: { name: string; email: string } | null = {
+    name: "Example User",
+    email: "user@example.com",
+  },
 ): void {
   writeFileSync(
     join(plugin, "config.json"),
-    `${JSON.stringify({ repoUrl: `file://${content}`, branch }, null, 2)}\n`,
+    `${JSON.stringify(
+      { repoUrl: `file://${content}`, branch, ...(author ? { author } : {}) },
+      null,
+      2,
+    )}\n`,
   );
 }
 
@@ -189,6 +207,7 @@ function makeFixture(options: { config?: boolean } = {}): Fixture {
     failFlag: join(root, "fail-ingest"),
     garbageFlag: join(root, "garbage-ingest"),
     gateFlag: join(root, "gate-assistant"),
+    contactsFile: join(root, "contacts.json"),
   };
 }
 
@@ -228,6 +247,7 @@ function syncEnv(fixture: Fixture): Record<string, string> {
     SM_TEST_FAIL_INGEST: fixture.failFlag,
     SM_TEST_GARBAGE_INGEST: fixture.garbageFlag,
     SM_TEST_GATE: fixture.gateFlag,
+    SM_TEST_CONTACTS: fixture.contactsFile,
   };
 }
 
@@ -931,5 +951,115 @@ describe("ingest outcomes", () => {
 
     expect(retried.exitCode).toBe(0);
     expect(lastSha(fixture)).not.toBe(before);
+  });
+});
+
+describe("commit author derivation", () => {
+  const guardianContacts = JSON.stringify({
+    ok: true,
+    contacts: [
+      {
+        id: "contact-1",
+        displayName: "Alice",
+        role: "guardian",
+        contactType: "person",
+        channels: [
+          {
+            id: "channel-1",
+            contactId: "contact-1",
+            type: "telegram",
+            address: "@alice",
+            isPrimary: true,
+          },
+          {
+            id: "channel-2",
+            contactId: "contact-1",
+            type: "email",
+            address: "old@example.com",
+          },
+          {
+            id: "channel-3",
+            contactId: "contact-1",
+            type: "email",
+            address: "alice@example.com",
+            isPrimary: true,
+          },
+        ],
+      },
+    ],
+  });
+
+  function configAuthor(fixture: Fixture): unknown {
+    const config = JSON.parse(readFileSync(join(fixture.plugin, "config.json"), "utf8"));
+    return config.author;
+  }
+
+  test("a missing author block is filled from the guardian's primary email", () => {
+    const fixture = makeFixture();
+    writeConfig(fixture.plugin, fixture.content, "main", null);
+    writeFileSync(fixture.contactsFile, guardianContacts);
+
+    const result = runSync(fixture);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      "shared-memory: set the commit author to Alice <alice@example.com> from the guardian contact",
+    );
+    expect(configAuthor(fixture)).toEqual({ name: "Alice", email: "alice@example.com" });
+
+    resetCalls(fixture);
+    runSync(fixture);
+    expect(calls(fixture).some((line) => line.startsWith("contacts"))).toBe(false);
+  });
+
+  test("a configured author block is never overwritten", () => {
+    const fixture = makeFixture();
+    writeFileSync(fixture.contactsFile, guardianContacts);
+
+    const result = runSync(fixture);
+
+    expect(result.exitCode).toBe(0);
+    expect(calls(fixture).some((line) => line.startsWith("contacts"))).toBe(false);
+    expect(configAuthor(fixture)).toEqual({
+      name: "Example User",
+      email: "user@example.com",
+    });
+  });
+
+  test("a guardian with no email leaves the author block absent", () => {
+    const fixture = makeFixture();
+    writeConfig(fixture.plugin, fixture.content, "main", null);
+    writeFileSync(
+      fixture.contactsFile,
+      JSON.stringify({
+        ok: true,
+        contacts: [
+          {
+            id: "contact-1",
+            displayName: "Alice",
+            role: "guardian",
+            contactType: "person",
+            channels: [
+              {
+                id: "channel-1",
+                contactId: "contact-1",
+                type: "telegram",
+                address: "@alice",
+                isPrimary: true,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const result = runSync(fixture);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      "publishing stays disabled until config.json has an author block",
+    );
+    expect(configAuthor(fixture)).toBeUndefined();
+    expect(result.stdout).toContain("shared-memory: synced");
   });
 });

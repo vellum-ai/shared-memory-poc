@@ -860,7 +860,8 @@ These are known and deliberate in this version, not defects to file.
   mode it wakes every six hours, finds it has nothing to do, and stops. Disable
   the row with `assistant schedules disable <id>` if that matters;
   the override survives upgrades.
-- **Publishing identity comes from the assistant.** The publish tool uses the
-  configured assistant display name for both Git author and committer, with a
-  generic email. An unnamed assistant falls back to `Vellum Assistant`. See
-  [Publishing identity](../README.md#publishing-identity) in the README.
+- **Publishing records an author and an assistant.** The Git author comes from
+  the `author` block in `config.json`, which sync can derive from the guardian
+  contact. The Git committer uses the assistant display name with a generic
+  email, falling back to `Vellum Assistant` when unnamed. See [Publishing
+  identity](../README.md#publishing-identity) in the README.

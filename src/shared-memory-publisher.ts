@@ -209,19 +209,69 @@ function outputText(value: Buffer): string {
   return value.toString("utf8").trim();
 }
 
-function resolveCommitIdentity(assistantName: string | null): Record<string, string> {
-  const name = assistantName?.trim() || FALLBACK_ASSISTANT_NAME;
-  if (byteLength(name) > 255 || /[\0-\x1f\x7f<>]/.test(name)) {
+function resolveCommitterIdentity(assistantName: string | null): Record<string, string> {
+  const committerName = assistantName?.trim() || FALLBACK_ASSISTANT_NAME;
+  if (byteLength(committerName) > 255 || /[\0-\x1f\x7f<>]/.test(committerName)) {
     throw new SharedMemoryPublishError(
       "GIT_IDENTITY_INVALID",
       "The assistant name must be short plain text before publishing.",
     );
   }
   return {
-    GIT_AUTHOR_NAME: name,
-    GIT_AUTHOR_EMAIL: ASSISTANT_COMMIT_EMAIL,
-    GIT_COMMITTER_NAME: name,
+    GIT_COMMITTER_NAME: committerName,
     GIT_COMMITTER_EMAIL: ASSISTANT_COMMIT_EMAIL,
+  };
+}
+
+async function resolveCommitIdentity(
+  repoDir: string,
+  pluginDir: string,
+  assistantName: string | null,
+  signal?: AbortSignal,
+): Promise<Record<string, string>> {
+  const committerIdentity = resolveCommitterIdentity(assistantName);
+  const config = await readRepositoryConfig(pluginDir);
+  if (config.author) {
+    return {
+      GIT_AUTHOR_NAME: config.author.name,
+      GIT_AUTHOR_EMAIL: config.author.email,
+      ...committerIdentity,
+    };
+  }
+
+  const readConfig = (key: string) =>
+    runRepositoryGit(repoDir, ["config", "--get", key], {
+      signal,
+      allowedExitCodes: [0, 1],
+    });
+  const [authorNameResult, authorEmailResult, userNameResult, userEmailResult] =
+    await Promise.all([
+      readConfig("author.name"),
+      readConfig("author.email"),
+      readConfig("user.name"),
+      readConfig("user.email"),
+    ]);
+  const nameResult = authorNameResult.exitCode === 0 ? authorNameResult : userNameResult;
+  const emailResult = authorEmailResult.exitCode === 0 ? authorEmailResult : userEmailResult;
+  const name = outputText(nameResult.stdout);
+  const email = outputText(emailResult.stdout);
+  if (
+    nameResult.exitCode !== 0 ||
+    emailResult.exitCode !== 0 ||
+    name.length === 0 ||
+    email.length === 0 ||
+    /[\0-\x1f\x7f]/.test(name) ||
+    /[\0-\x1f\x7f]/.test(email)
+  ) {
+    throw new SharedMemoryPublishError(
+      "GIT_IDENTITY_MISSING",
+      'Configure the publishing author before publishing: set {"author": {"name": ..., "email": ...}} in the plugin\'s config.json, or configure a Git author for the clone.',
+    );
+  }
+  return {
+    GIT_AUTHOR_NAME: name,
+    GIT_AUTHOR_EMAIL: email,
+    ...committerIdentity,
   };
 }
 
@@ -553,7 +603,12 @@ async function createCommit(
   const indexPath = join(pluginDir, "data", `publish-index.${randomUUID()}`);
   const indexEnv = { GIT_INDEX_FILE: indexPath };
   try {
-    const commitIdentity = resolveCommitIdentity(assistantName);
+    const commitIdentity = await resolveCommitIdentity(
+      revision.repoDir,
+      pluginDir,
+      assistantName,
+      signal,
+    );
     await runRepositoryGit(revision.repoDir, ["read-tree", proposal.expectedHead], {
       signal,
       env: indexEnv,
