@@ -35,18 +35,6 @@ const PRESERVE_MESSAGE =
 const FAKE_ASSISTANT = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$SM_TEST_CALLS"
 
-# The guardian-contact read the sync makes when config.json has no author
-# block. Answered before the gate below so identity derivation, which runs
-# outside the sync lock, can never deadlock a gated test.
-if [ "$1" = "contacts" ]; then
-  if [ -f "\${SM_TEST_CONTACTS:-}" ]; then
-    cat "$SM_TEST_CONTACTS"
-  else
-    printf '{"ok":true,"contacts":[]}\\n'
-  fi
-  exit 0
-fi
-
 waited=0
 while [ -f "\${SM_TEST_GATE:-}" ] && [ "$waited" -lt 200 ]; do
   sleep 0.1
@@ -131,7 +119,6 @@ interface Fixture {
   failFlag: string;
   garbageFlag: string;
   gateFlag: string;
-  contactsFile: string;
 }
 
 const roots: string[] = [];
@@ -151,24 +138,14 @@ function makeContentRepo(root: string): void {
   commit(root, "seed shared content");
 }
 
-// The default fixture config carries an author block so the identity
-// derivation stays quiet: without one, every run would query the guardian
-// contact and the call logs the older tests assert on would shift.
-const FIXTURE_AUTHOR = { name: "Fixture Person", email: "fixture-person@example.com" };
-
 function writeConfig(
   plugin: string,
   content: string,
   branch: string,
-  author: { name: string; email: string } | null = FIXTURE_AUTHOR,
 ): void {
   writeFileSync(
     join(plugin, "config.json"),
-    `${JSON.stringify(
-      { repoUrl: `file://${content}`, branch, ...(author ? { author } : {}) },
-      null,
-      2,
-    )}\n`,
+    `${JSON.stringify({ repoUrl: `file://${content}`, branch }, null, 2)}\n`,
   );
 }
 
@@ -212,7 +189,6 @@ function makeFixture(options: { config?: boolean } = {}): Fixture {
     failFlag: join(root, "fail-ingest"),
     garbageFlag: join(root, "garbage-ingest"),
     gateFlag: join(root, "gate-assistant"),
-    contactsFile: join(root, "contacts.json"),
   };
 }
 
@@ -252,7 +228,6 @@ function syncEnv(fixture: Fixture): Record<string, string> {
     SM_TEST_FAIL_INGEST: fixture.failFlag,
     SM_TEST_GARBAGE_INGEST: fixture.garbageFlag,
     SM_TEST_GATE: fixture.gateFlag,
-    SM_TEST_CONTACTS: fixture.contactsFile,
   };
 }
 
@@ -956,90 +931,5 @@ describe("ingest outcomes", () => {
 
     expect(retried.exitCode).toBe(0);
     expect(lastSha(fixture)).not.toBe(before);
-  });
-});
-
-describe("commit author derivation", () => {
-  const GUARDIAN_CONTACTS = JSON.stringify({
-    ok: true,
-    contacts: [
-      {
-        id: "c-1",
-        displayName: "Aaron Levin",
-        role: "guardian",
-        contactType: "person",
-        channels: [
-          { id: "ch-1", contactId: "c-1", type: "telegram", address: "@aaron", isPrimary: true },
-          { id: "ch-2", contactId: "c-1", type: "email", address: "old@example.com" },
-          { id: "ch-3", contactId: "c-1", type: "email", address: "aaron@vellum.ai", isPrimary: true },
-        ],
-      },
-    ],
-  });
-
-  function configAuthor(fixture: Fixture): unknown {
-    const config = JSON.parse(readFileSync(join(fixture.plugin, "config.json"), "utf8"));
-    return config.author;
-  }
-
-  test("a missing author block is filled in from the guardian's primary email", () => {
-    const fixture = makeFixture();
-    writeConfig(fixture.plugin, fixture.content, "main", null);
-    writeFileSync(fixture.contactsFile, GUARDIAN_CONTACTS);
-
-    const result = runSync(fixture);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain(
-      "shared-memory: set the commit author to Aaron Levin <aaron@vellum.ai> from the guardian contact",
-    );
-    expect(configAuthor(fixture)).toEqual({ name: "Aaron Levin", email: "aaron@vellum.ai" });
-
-    // The next run sees the block and asks for nothing.
-    resetCalls(fixture);
-    runSync(fixture);
-    expect(calls(fixture).some((line) => line.startsWith("contacts"))).toBe(false);
-  });
-
-  test("an author block someone wrote by hand is never overwritten", () => {
-    const fixture = makeFixture();
-    writeFileSync(fixture.contactsFile, GUARDIAN_CONTACTS);
-
-    const result = runSync(fixture);
-
-    expect(result.exitCode).toBe(0);
-    expect(calls(fixture).some((line) => line.startsWith("contacts"))).toBe(false);
-    expect(configAuthor(fixture)).toEqual(FIXTURE_AUTHOR);
-  });
-
-  test("a guardian with no email leaves the block absent and says so", () => {
-    const fixture = makeFixture();
-    writeConfig(fixture.plugin, fixture.content, "main", null);
-    writeFileSync(
-      fixture.contactsFile,
-      JSON.stringify({
-        ok: true,
-        contacts: [
-          {
-            id: "c-1",
-            displayName: "Aaron Levin",
-            role: "guardian",
-            contactType: "person",
-            channels: [
-              { id: "ch-1", contactId: "c-1", type: "telegram", address: "@aaron", isPrimary: true },
-            ],
-          },
-        ],
-      }),
-    );
-
-    const result = runSync(fixture);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("publishing stays disabled until config.json has an author block");
-    expect(configAuthor(fixture)).toBeUndefined();
-
-    // The sync itself still ran to completion.
-    expect(result.stdout).toContain("shared-memory: synced");
   });
 });

@@ -71,10 +71,14 @@ interface FilteredBlob {
   content: Buffer;
 }
 
-const COMMITTER_IDENTITY = {
-  GIT_COMMITTER_NAME: "Vellum Assistant",
-  GIT_COMMITTER_EMAIL: "assistant@vellum.ai",
-};
+const FALLBACK_ASSISTANT_NAME = "Vellum Assistant";
+const ASSISTANT_COMMIT_EMAIL = "assistant@vellum.ai";
+
+interface SharedMemoryPublishOptions {
+  pluginDir: string;
+  assistantName: string | null;
+  signal?: AbortSignal;
+}
 
 export class SharedMemoryPublishError extends Error {
   readonly effectivePolicy?: EffectivePolicy;
@@ -205,57 +209,19 @@ function outputText(value: Buffer): string {
   return value.toString("utf8").trim();
 }
 
-async function resolveCommitIdentity(
-  repoDir: string,
-  pluginDir: string,
-  signal?: AbortSignal,
-): Promise<Record<string, string>> {
-  // The author block in config.json is the install's declared identity, so it
-  // wins over whatever Git config the checkout happens to inherit. It is what
-  // lets digests attribute each publication to the person behind the
-  // assistant rather than to a shared generic identity.
-  const config = await readRepositoryConfig(pluginDir);
-  if (config.author) {
-    return {
-      GIT_AUTHOR_NAME: config.author.name,
-      GIT_AUTHOR_EMAIL: config.author.email,
-      ...COMMITTER_IDENTITY,
-    };
-  }
-
-  const readConfig = (key: string) =>
-    runRepositoryGit(repoDir, ["config", "--get", key], {
-      signal,
-      allowedExitCodes: [0, 1],
-    });
-  const [authorNameResult, authorEmailResult, userNameResult, userEmailResult] =
-    await Promise.all([
-      readConfig("author.name"),
-      readConfig("author.email"),
-      readConfig("user.name"),
-      readConfig("user.email"),
-    ]);
-  const nameResult = authorNameResult.exitCode === 0 ? authorNameResult : userNameResult;
-  const emailResult = authorEmailResult.exitCode === 0 ? authorEmailResult : userEmailResult;
-  const name = outputText(nameResult.stdout);
-  const email = outputText(emailResult.stdout);
-  if (
-    nameResult.exitCode !== 0 ||
-    emailResult.exitCode !== 0 ||
-    name.length === 0 ||
-    email.length === 0 ||
-    /[\0-\x1f\x7f]/.test(name) ||
-    /[\0-\x1f\x7f]/.test(email)
-  ) {
+function resolveCommitIdentity(assistantName: string | null): Record<string, string> {
+  const name = assistantName?.trim() || FALLBACK_ASSISTANT_NAME;
+  if (byteLength(name) > 255 || /[\0-\x1f\x7f<>]/.test(name)) {
     throw new SharedMemoryPublishError(
-      "GIT_IDENTITY_MISSING",
-      'Configure the publishing identity before publishing: set {"author": {"name": ..., "email": ...}} in the plugin\'s config.json (the sync schedule fills it in from the guardian contact when it can), or configure a Git author for the clone.',
+      "GIT_IDENTITY_INVALID",
+      "The assistant name must be short plain text before publishing.",
     );
   }
   return {
     GIT_AUTHOR_NAME: name,
-    GIT_AUTHOR_EMAIL: email,
-    ...COMMITTER_IDENTITY,
+    GIT_AUTHOR_EMAIL: ASSISTANT_COMMIT_EMAIL,
+    GIT_COMMITTER_NAME: name,
+    GIT_COMMITTER_EMAIL: ASSISTANT_COMMIT_EMAIL,
   };
 }
 
@@ -581,13 +547,13 @@ async function createCommit(
   revision: RepositoryRevision,
   proposal: SharedMemoryPublishProposal,
   changed: ChangedUpsert[],
-  pluginDir: string,
-  signal?: AbortSignal,
+  options: SharedMemoryPublishOptions,
 ): Promise<string> {
+  const { pluginDir, assistantName, signal } = options;
   const indexPath = join(pluginDir, "data", `publish-index.${randomUUID()}`);
   const indexEnv = { GIT_INDEX_FILE: indexPath };
   try {
-    const commitIdentity = await resolveCommitIdentity(revision.repoDir, pluginDir, signal);
+    const commitIdentity = resolveCommitIdentity(assistantName);
     await runRepositoryGit(revision.repoDir, ["read-tree", proposal.expectedHead], {
       signal,
       env: indexEnv,
@@ -750,9 +716,9 @@ function githubCommitUrl(repoUrl: string, commitSha: string): string | undefined
 async function publishAtRevision(
   revision: RepositoryRevision,
   proposal: SharedMemoryPublishProposal,
-  pluginDir: string,
-  signal?: AbortSignal,
+  options: SharedMemoryPublishOptions,
 ): Promise<SharedMemoryPublishResult> {
+  const { pluginDir, signal } = options;
   requireExpectedPolicy(proposal.expectedPolicyFingerprint, revision);
   requireExpectedHead(proposal.expectedHead, revision.expectedHead, revision.effectivePolicy);
   await assertRepositoryReady(revision, signal);
@@ -775,7 +741,7 @@ async function publishAtRevision(
     };
   }
 
-  const commitSha = await createCommit(revision, proposal, changed, pluginDir, signal);
+  const commitSha = await createCommit(revision, proposal, changed, options);
   await requireCurrentConfiguration(
     proposal.expectedPolicyFingerprint,
     revision,
@@ -848,14 +814,14 @@ async function publishAtRevision(
 
 export async function publishSharedMemory(
   proposal: SharedMemoryPublishProposal,
-  pluginDir: string,
-  signal?: AbortSignal,
+  options: SharedMemoryPublishOptions,
 ): Promise<SharedMemoryPublishResult> {
+  const { pluginDir, signal } = options;
   let effectivePolicy: EffectivePolicy | undefined;
   try {
     return await withRepositoryRevision(pluginDir, signal, async (revision) => {
       effectivePolicy = revision.effectivePolicy;
-      return publishAtRevision(revision, proposal, pluginDir, signal);
+      return publishAtRevision(revision, proposal, options);
     });
   } catch (error) {
     if (error instanceof SharedMemoryPublishError) {

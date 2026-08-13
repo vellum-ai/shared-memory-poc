@@ -237,12 +237,12 @@ not greeted with the repo's whole history. The same reset happens if the clone
 was replaced and no longer holds the old watermark.
 
 Attribution comes from the commits in the range, skipping merge commits, so a
-change is counted once under the person who made it. A skill counts as added or
-removed only when its `SKILL.md` is; any other change under its directory is an
-update. A rename is reported as an update of the new name. An entity the same
-author both added and removed inside one range nets out to nothing; the same
-sequence split across two authors shows one line for each, which overstates
-what happened but never hides it.
+change is counted once under the assistant that made it. A skill counts as
+added or removed only when its `SKILL.md` is; any other change under its
+directory is an update. A rename is reported as an update of the new name. An
+entity the same author both added and removed inside one range nets out to
+nothing; the same sequence split across two authors shows one line for each,
+which overstates what happened but never hides it.
 
 Two schedules back this, and the optional `digest` block in `config.json`
 decides which one speaks:
@@ -271,29 +271,12 @@ notified once.
 
 ## Publishing identity
 
-Every commit the publish tools create is attributed to an author, and the
-digest is what that attribution is for: it reports shared-knowledge changes
-per person. If every assistant published as the same generic identity, every
-digest would credit one name for everyone's work.
-
-The author comes from an optional block in `config.json`:
-
-```json
-{ "author": { "name": "Aaron Levin", "email": "aaron@vellum.ai" } }
-```
-
-Nobody has to write it by hand. When the block is missing, the sync schedule
-fills it in from the guardian contact, the human this assistant belongs to,
-using the contact's display name and primary email channel. A block that is
-already present is never touched, so a hand-written one wins. If the guardian
-has no email channel, sync says so on every tick and publishing refuses with
-`GIT_IDENTITY_MISSING` until the block exists.
-
-The block outranks whatever Git config the clone happens to inherit, so a
-stray global gitconfig on the host can never misattribute a publication. The
-committer, as opposed to the author, is always
-`Vellum Assistant <assistant@vellum.ai>`; that is the machinery's signature,
-while the author line is the person's.
+Every commit the publish tool creates uses the assistant's configured display
+name for both the Git author and committer. The email is the generic
+`assistant@vellum.ai`, so publishing does not copy a person's contact details
+into the shared repository. Digests can therefore report which assistant made
+each change. If an assistant has no display name, the commit falls back to
+`Vellum Assistant`.
 
 ## Install
 

@@ -20,40 +20,6 @@ fi
 
 BRANCH="$(jq -r '.branch // "main"' "$CONFIG")"
 
-# Publishing attributes every commit to this install's author block, so the
-# digests other assistants receive can say who changed what. When the block is
-# missing, fill it in from the guardian contact, which is the human this
-# assistant belongs to. A block someone wrote by hand is never overwritten,
-# and a failure here never blocks the sync: the block just stays absent and
-# publishing keeps refusing until an author exists.
-AUTHOR_NAME="$(jq -r '.author.name // empty' "$CONFIG")"
-AUTHOR_EMAIL="$(jq -r '.author.email // empty' "$CONFIG")"
-if [ -z "$AUTHOR_NAME" ] || [ -z "$AUTHOR_EMAIL" ]; then
-  GUARDIAN_JSON="$(assistant contacts list --role guardian --json 2>/dev/null || true)"
-  # The guardian's primary email channel first, then any email channel.
-  GUARDIAN_QUERY='[.contacts[]?
-      | . as $c | .channels[]?
-      | select(.type == "email")
-      | {name: $c.displayName, email: .address, primary: (.isPrimary == true)}]
-    | sort_by(.primary | not) | .[0]'
-  G_NAME="$(jq -r "$GUARDIAN_QUERY | .name // empty" <<<"$GUARDIAN_JSON" 2>/dev/null || true)"
-  G_EMAIL="$(jq -r "$GUARDIAN_QUERY | .email // empty" <<<"$GUARDIAN_JSON" 2>/dev/null || true)"
-  if [ -n "$G_NAME" ] && [ -n "$G_EMAIL" ]; then
-    CONFIG_TMP="$CONFIG.tmp.$$"
-    if jq --arg name "$G_NAME" --arg email "$G_EMAIL" \
-      '.author = {name: $name, email: $email}' "$CONFIG" > "$CONFIG_TMP"; then
-      mv "$CONFIG_TMP" "$CONFIG"
-      echo "shared-memory: set the commit author to $G_NAME <$G_EMAIL> from the guardian contact"
-    else
-      rm -f "$CONFIG_TMP"
-    fi
-  elif jq -e '.contacts' >/dev/null 2>&1 <<<"$GUARDIAN_JSON"; then
-    echo "shared-memory: no commit author configured and the guardian contact has no email, so publishing stays disabled until config.json has an author block"
-  else
-    echo "shared-memory: no commit author configured and the guardian contact could not be read; the next tick tries again"
-  fi
-fi
-
 # The staging directory the pages are ingested from, the replacement clone and
 # the lock, none of which may outlive the run.
 STAGE=""
@@ -253,7 +219,7 @@ if [ "$sync_pages" = "1" ] && [ -d "$REPO/concepts" ] && [ -n "$(find "$REPO/con
   # the watermark and re-ingest the whole tree on every tick, forever.
   INGEST_JSON="$(assistant memory ingest --dir "$STAGE" --overwrite --json || true)"
 
-  if ! jq -e '(.ok != false) and ((.written | type) == "number")' >/dev/null 2>&1 <<<"$INGEST_JSON"; then
+  if [ -z "$INGEST_JSON" ] || ! jq -e '(.ok != false) and ((.written | type) == "number")' >/dev/null 2>&1 <<<"$INGEST_JSON"; then
     INGEST_ERROR="$(jq -r '.error // empty' <<<"$INGEST_JSON" 2>/dev/null || true)"
     echo "shared-memory: ingest did not complete (${INGEST_ERROR:-no JSON summary}), watermark unchanged"
     exit 1
