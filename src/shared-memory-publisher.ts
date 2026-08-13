@@ -318,10 +318,14 @@ async function changedUpserts(
     const entry = await findConceptTreeEntry(revision, upsert.path, signal);
     const proposedOid = outputText(
       (
-        await runRepositoryGit(revision.repoDir, ["hash-object", "--stdin"], {
-          signal,
-          stdin: upsert.content,
-        })
+        await runRepositoryGit(
+          revision.repoDir,
+          ["hash-object", `--path=${upsert.path}`, "--stdin"],
+          {
+            signal,
+            stdin: upsert.content,
+          },
+        )
       ).stdout,
     );
     if (entry?.oid !== proposedOid) {
@@ -419,10 +423,14 @@ async function createCommit(
     for (const upsert of changed) {
       const blobOid = outputText(
         (
-          await runRepositoryGit(revision.repoDir, ["hash-object", "-w", "--stdin"], {
-            signal,
-            stdin: upsert.content,
-          })
+          await runRepositoryGit(
+            revision.repoDir,
+            ["hash-object", "-w", `--path=${upsert.path}`, "--stdin"],
+            {
+              signal,
+              stdin: upsert.content,
+            },
+          )
         ).stdout,
       );
       await runRepositoryGit(

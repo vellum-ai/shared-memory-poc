@@ -98,6 +98,7 @@ function cloneInstall(
 
 function makeFixture(
   options: {
+    attributes?: string;
     branch?: string;
     objectFormat?: "sha1" | "sha256";
     sharingGuidance?: string;
@@ -114,6 +115,9 @@ function makeFixture(
   }
   writeFile(join(seed, "concepts", "deploy-runbook.md"), DEPLOY_CONTENT);
   writeFile(join(seed, "README.md"), "# Shared content\n");
+  if (options.attributes !== undefined) {
+    writeFile(join(seed, ".gitattributes"), options.attributes);
+  }
   const expectedHead = commit(seed, "seed shared concepts");
 
   const remote = join(root, "remote.git");
@@ -322,6 +326,23 @@ describe("atomic shared memory publishing", () => {
     expect(result.body.previousHead).toBe(fixture.expectedHead);
     expect(result.body.commitSha).toMatch(/^[0-9a-f]{64}$/);
     expect(remoteHead(fixture)).toBe(result.body.commitSha as string);
+  });
+
+  test("applies repository text normalization to published Markdown", async () => {
+    const fixture = makeFixture({ attributes: "*.md text eol=lf\n" });
+    const normalized = `${DEPLOY_CONTENT}\nNormalized update.\n`;
+    const crlf = normalized.replaceAll("\n", "\r\n");
+
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        { path: "concepts/deploy-runbook.md", content: crlf },
+      ]),
+    );
+
+    expect(result.reply.isError).toBe(false);
+    expect(remoteFile(fixture, "concepts/deploy-runbook.md")).toBe(normalized);
+    expect(runGit(fixture.checkout, ["status", "--porcelain"])).toBe("");
   });
 
   test("returns a no-op without creating a commit when content already matches", async () => {
