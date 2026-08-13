@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Buffer } from "node:buffer";
 import {
   chmodSync,
   existsSync,
@@ -359,10 +360,16 @@ describe("atomic shared memory publishing", () => {
     const cases = [
       {
         name: "oversized",
+        output: Buffer.alloc(70_000, "x"),
         script: "head -c 70000 /dev/zero | tr '\\000' x",
       },
-      { name: "invalid-utf8", script: "printf '\\377'" },
-      { name: "nul", script: "printf 'valid\\000invalid\\n'" },
+      { name: "invalid-utf8", output: Buffer.from([0xff]), script: "printf '\\377'" },
+      {
+        name: "nul",
+        output: Buffer.from("valid\0invalid\n"),
+        script: "printf 'valid\\000invalid\\n'",
+      },
+      { name: "blank", output: Buffer.from("   \n"), script: "printf '   \\n'" },
     ];
 
     for (const testCase of cases) {
@@ -388,6 +395,19 @@ describe("atomic shared memory publishing", () => {
       expect(result.reply.isError).toBe(true);
       expect(errorCode(result.body)).toBe("CONTENT_LIMIT");
       expect(remoteHead(fixture)).toBe(attributes.sha);
+      const rejected = join(fixture.root, `${testCase.name}-filtered.bin`);
+      writeFileSync(rejected, testCase.output);
+      const rejectedOid = runGit(fixture.checkout, [
+        "hash-object",
+        "--no-filters",
+        rejected,
+      ]).trim();
+      expect(() => runGit(fixture.checkout, ["cat-file", "-e", rejectedOid])).toThrow();
+      expect(
+        readdirSync(join(fixture.pluginDir, "data")).some((name) =>
+          name.startsWith("publish-objects."),
+        ),
+      ).toBe(false);
     }
   });
 
