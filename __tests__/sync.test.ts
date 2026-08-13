@@ -855,6 +855,31 @@ describe("clone recovery", () => {
     expect(leftoverClones(fixture)).toEqual([]);
     expect(lastSha(fixture)).toBe(releaseSha);
   });
+
+  test("a repoUrl change in config re-clones onto the new remote", () => {
+    const fixture = makeFixture();
+    expect(runSync(fixture).exitCode).toBe(0);
+
+    const otherContent = mkdtempSync(join(tmpdir(), "shared-memory-other-"));
+    roots.push(otherContent);
+    initRepo(otherContent);
+    writeFile(join(otherContent, "concepts", "handbook.md"), "---\ntitle: Handbook\n---\n\nThe other repo.\n");
+    const otherSha = commit(otherContent, "seed the other content repo");
+
+    const clone = clonePath(fixture);
+    const marker = markClone(fixture);
+    writeConfig(fixture.plugin, otherContent, "main");
+    resetCalls(fixture);
+
+    const result = runSync(fixture);
+
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+    expect(runGit(clone, ["remote", "get-url", "origin"]).trim()).toBe(`file://${otherContent}`);
+    expect(runGit(clone, ["rev-parse", "HEAD"]).trim()).toBe(otherSha);
+    expect(leftoverClones(fixture)).toEqual([]);
+    expect(lastSha(fixture)).toBe(otherSha);
+  });
 });
 
 describe("ingest outcomes", () => {
