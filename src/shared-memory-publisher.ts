@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 
 import {
   MAX_CONCEPT_FILE_BYTES,
@@ -12,6 +12,7 @@ import {
   createEffectivePolicy,
   createOperationSignal,
   createPolicyFingerprint,
+  decodeUtf8,
   type EffectivePolicy,
   findConceptTreeEntry,
   MAX_EXACT_CONTENT_BYTES,
@@ -58,8 +59,16 @@ interface PublishErrorDetails {
   commitSha?: string;
 }
 
-interface ChangedUpsert extends SharedMemoryUpsert {
+interface ChangedUpsert {
+  path: string;
   mode: "100644" | "100755";
+  blobOid: string;
+  content: Buffer;
+}
+
+interface FilteredBlob {
+  oid: string;
+  content: Buffer;
 }
 
 const COMMITTER_IDENTITY = {
@@ -311,28 +320,177 @@ async function assertRepositoryReady(
 async function changedUpserts(
   revision: RepositoryRevision,
   upserts: SharedMemoryUpsert[],
+  pluginDir: string,
   signal?: AbortSignal,
 ): Promise<ChangedUpsert[]> {
-  const changed: ChangedUpsert[] = [];
-  for (const upsert of upserts) {
-    const entry = await findConceptTreeEntry(revision, upsert.path, signal);
-    const proposedOid = outputText(
+  const infoAttributesPath = await resolveInfoAttributesPath(revision, signal);
+  await assertNoInfoAttributes(infoAttributesPath);
+
+  const temporaryObjects = await mkdtemp(join(pluginDir, "data", "publish-objects."));
+  try {
+    const emptyAttributes = join(temporaryObjects, "global-attributes");
+    await writeFile(emptyAttributes, "");
+    const attributeEnv = {
+      GIT_ATTR_NOSYSTEM: "1",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.attributesFile",
+      GIT_CONFIG_PARAMETERS: "",
+      GIT_CONFIG_VALUE_0: emptyAttributes,
+    };
+    const sourceCheck = await runRepositoryGit(
+      revision.repoDir,
+      ["check-attr", "--source", revision.expectedHead, "--all", "--", upserts[0].path],
+      { signal, allowFailure: true, env: attributeEnv },
+    );
+    if (sourceCheck.exitCode !== 0) {
+      throw new SharedMemoryPublishError(
+        "REPOSITORY_ERROR",
+        "The installed Git version cannot read attributes from the inspected commit.",
+      );
+    }
+
+    const objectPath = outputText(
       (
-        await runRepositoryGit(
-          revision.repoDir,
-          ["hash-object", `--path=${upsert.path}`, "--stdin"],
-          {
-            signal,
-            stdin: upsert.content,
-          },
-        )
+        await runRepositoryGit(revision.repoDir, ["rev-parse", "--git-path", "objects"], {
+          signal,
+        })
       ).stdout,
     );
-    if (entry?.oid !== proposedOid) {
-      changed.push({ ...upsert, mode: entry?.mode ?? "100644" });
+    const objectEnv = {
+      ...attributeEnv,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: resolve(revision.repoDir, objectPath),
+      GIT_ATTR_SOURCE: revision.expectedHead,
+      GIT_OBJECT_DIRECTORY: temporaryObjects,
+    };
+    const changed: ChangedUpsert[] = [];
+    let totalBytes = 0;
+    for (const upsert of upserts) {
+      const entry = await findConceptTreeEntry(revision, upsert.path, signal);
+      const blob = await filterAndValidateBlob(revision, upsert, objectEnv, signal);
+      totalBytes += blob.content.length;
+      if (totalBytes > MAX_EXACT_CONTENT_BYTES) {
+        throw new SharedMemoryPublishError(
+          "CONTENT_LIMIT",
+          `One publication may contain at most ${MAX_EXACT_CONTENT_BYTES} bytes after Git filters.`,
+        );
+      }
+      if (entry?.oid !== blob.oid) {
+        changed.push({
+          path: upsert.path,
+          mode: entry?.mode ?? "100644",
+          blobOid: blob.oid,
+          content: blob.content,
+        });
+      }
     }
+    await assertNoInfoAttributes(infoAttributesPath);
+    return changed;
+  } finally {
+    await rm(temporaryObjects, { recursive: true, force: true });
   }
-  return changed;
+}
+
+async function resolveInfoAttributesPath(
+  revision: RepositoryRevision,
+  signal?: AbortSignal,
+): Promise<string> {
+  const infoAttributesPath = outputText(
+    (
+      await runRepositoryGit(
+        revision.repoDir,
+        ["rev-parse", "--git-path", "info/attributes"],
+        { signal },
+      )
+    ).stdout,
+  );
+  return resolve(revision.repoDir, infoAttributesPath);
+}
+
+async function assertNoInfoAttributes(infoAttributesPath: string): Promise<void> {
+  try {
+    await lstat(infoAttributesPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw new SharedMemoryPublishError(
+      "REPOSITORY_ERROR",
+      "Git could not verify repository-local attributes.",
+    );
+  }
+  throw new SharedMemoryPublishError(
+    "REPOSITORY_MISMATCH",
+    "Remove the repository-local info/attributes file before publishing shared memory.",
+  );
+}
+
+async function filterAndValidateBlob(
+  revision: RepositoryRevision,
+  upsert: SharedMemoryUpsert,
+  objectEnv: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<FilteredBlob> {
+  const blobOid = outputText(
+    (
+      await runRepositoryGit(
+        revision.repoDir,
+        ["hash-object", "-w", `--path=${upsert.path}`, "--stdin"],
+        {
+          signal,
+          stdin: upsert.content,
+          env: objectEnv,
+        },
+      )
+    ).stdout,
+  );
+  const sizeText = outputText(
+    (
+      await runRepositoryGit(revision.repoDir, ["cat-file", "-s", blobOid], {
+        signal,
+        env: objectEnv,
+      })
+    ).stdout,
+  );
+  const size = Number.parseInt(sizeText, 10);
+  if (!/^\d+$/.test(sizeText) || !Number.isSafeInteger(size) || size > MAX_CONCEPT_FILE_BYTES) {
+    throw new SharedMemoryPublishError(
+      "CONTENT_LIMIT",
+      `${upsert.path} exceeds the ${MAX_CONCEPT_FILE_BYTES}-byte limit after Git filters.`,
+    );
+  }
+
+  const blob = await runRepositoryGit(revision.repoDir, ["cat-file", "blob", blobOid], {
+    signal,
+    env: objectEnv,
+  });
+  if (blob.stdout.length !== size) {
+    throw new SharedMemoryPublishError(
+      "REPOSITORY_ERROR",
+      `Git returned an incomplete filtered blob for ${upsert.path}.`,
+    );
+  }
+  let content: string;
+  try {
+    content = decodeUtf8(blob.stdout);
+  } catch {
+    throw new SharedMemoryPublishError(
+      "CONTENT_LIMIT",
+      `${upsert.path} is not valid UTF-8 after Git filters.`,
+    );
+  }
+  if (content.includes("\0")) {
+    throw new SharedMemoryPublishError(
+      "CONTENT_LIMIT",
+      `${upsert.path} contains a NUL byte after Git filters.`,
+    );
+  }
+  if (content.trim().length === 0) {
+    throw new SharedMemoryPublishError(
+      "CONTENT_LIMIT",
+      `${upsert.path} is empty after Git filters.`,
+    );
+  }
+  return { oid: blobOid, content: blob.stdout };
 }
 
 async function fetchRemoteHead(
@@ -425,14 +583,17 @@ async function createCommit(
         (
           await runRepositoryGit(
             revision.repoDir,
-            ["hash-object", "-w", `--path=${upsert.path}`, "--stdin"],
-            {
-              signal,
-              stdin: upsert.content,
-            },
+            ["hash-object", "-w", "--no-filters", "--stdin"],
+            { signal, stdin: upsert.content },
           )
         ).stdout,
       );
+      if (blobOid !== upsert.blobOid) {
+        throw new SharedMemoryPublishError(
+          "REPOSITORY_ERROR",
+          `Git changed the validated blob for ${upsert.path}.`,
+        );
+      }
       await runRepositoryGit(
         revision.repoDir,
         ["update-index", "--add", "--cacheinfo", upsert.mode, blobOid, upsert.path],
@@ -581,7 +742,7 @@ async function publishAtRevision(
   requireExpectedPolicy(proposal.expectedPolicyFingerprint, revision);
   requireExpectedHead(proposal.expectedHead, revision.expectedHead, revision.effectivePolicy);
   await assertRepositoryReady(revision, signal);
-  const changed = await changedUpserts(revision, proposal.upserts, signal);
+  const changed = await changedUpserts(revision, proposal.upserts, pluginDir, signal);
   const freshHead = await fetchRemoteHead(revision, signal);
   requireExpectedHead(proposal.expectedHead, freshHead, revision.effectivePolicy);
   if (changed.length === 0) {

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Buffer } from "node:buffer";
 import {
   chmodSync,
   existsSync,
@@ -10,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import type { ToolContext } from "@vellumai/plugin-api";
 
@@ -98,7 +99,6 @@ function cloneInstall(
 
 function makeFixture(
   options: {
-    attributes?: string;
     branch?: string;
     objectFormat?: "sha1" | "sha256";
     sharingGuidance?: string;
@@ -115,9 +115,6 @@ function makeFixture(
   }
   writeFile(join(seed, "concepts", "deploy-runbook.md"), DEPLOY_CONTENT);
   writeFile(join(seed, "README.md"), "# Shared content\n");
-  if (options.attributes !== undefined) {
-    writeFile(join(seed, ".gitattributes"), options.attributes);
-  }
   const expectedHead = commit(seed, "seed shared concepts");
 
   const remote = join(root, "remote.git");
@@ -205,6 +202,14 @@ function writePostIndexChangeHook(checkout: string, script: string): void {
   const hook = join(checkout, ".git", "hooks", "post-index-change");
   writeFile(hook, `#!/usr/bin/env bash\nset -euo pipefail\n${script}\n`);
   chmodSync(hook, 0o755);
+}
+
+function configureCleanFilter(fixture: Fixture, name: string, script: string): void {
+  const filter = join(fixture.root, `${name}-filter.sh`);
+  writeFile(filter, `#!/usr/bin/env bash\nset -euo pipefail\n${script}\n`);
+  chmodSync(filter, 0o755);
+  runGit(fixture.checkout, ["config", `filter.${name}.clean`, filter]);
+  runGit(fixture.checkout, ["config", `filter.${name}.required`, "true"]);
 }
 
 async function waitForFile(path: string): Promise<void> {
@@ -329,13 +334,19 @@ describe("atomic shared memory publishing", () => {
   });
 
   test("applies repository text normalization to published Markdown", async () => {
-    const fixture = makeFixture({ attributes: "*.md text eol=lf\n" });
+    const fixture = makeFixture();
+    const attributes = advanceFromClone(
+      fixture,
+      "attribute-writer",
+      ".gitattributes",
+      "*.md text eol=lf\n",
+    );
     const normalized = `${DEPLOY_CONTENT}\nNormalized update.\n`;
     const crlf = normalized.replaceAll("\n", "\r\n");
 
     const result = await publish(
       fixture,
-      proposal(fixture.expectedHead, [
+      proposal(attributes.sha, [
         { path: "concepts/deploy-runbook.md", content: crlf },
       ]),
     );
@@ -344,6 +355,132 @@ describe("atomic shared memory publishing", () => {
     expect(remoteFile(fixture, "concepts/deploy-runbook.md")).toBe(normalized);
     expect(runGit(fixture.checkout, ["status", "--porcelain"])).toBe("");
   });
+
+  test("ignores non-versioned global attributes while publishing", async () => {
+    const fixture = makeFixture();
+    const attributes = join(fixture.root, "global-attributes");
+    writeFile(attributes, "concepts/global.md filter=global-override\n");
+    configureCleanFilter(fixture, "global-override", "printf 'overridden\\n'");
+    runGit(fixture.checkout, ["config", "core.attributesFile", attributes]);
+    const content = `${DEPLOY_CONTENT}\nRepository content.\n`;
+
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        { path: "concepts/global.md", content },
+      ]),
+    );
+
+    expect(result.reply.isError).toBe(false);
+    expect(remoteFile(fixture, "concepts/global.md")).toBe(content);
+  });
+
+  test("ignores inherited command-scope attributes while publishing", async () => {
+    const fixture = makeFixture();
+    const attributes = join(fixture.root, "command-attributes");
+    writeFile(attributes, "concepts/inherited.md filter=command-override\n");
+    configureCleanFilter(fixture, "command-override", "printf 'overridden\\n'");
+    const previousParameters = process.env.GIT_CONFIG_PARAMETERS;
+    process.env.GIT_CONFIG_PARAMETERS = `'core.attributesFile'='${attributes}'`;
+    const content = `${DEPLOY_CONTENT}\nRepository content.\n`;
+
+    try {
+      const result = await publish(
+        fixture,
+        proposal(fixture.expectedHead, [
+          { path: "concepts/inherited.md", content },
+        ]),
+      );
+
+      expect(result.reply.isError).toBe(false);
+      expect(remoteFile(fixture, "concepts/inherited.md")).toBe(content);
+    } finally {
+      if (previousParameters === undefined) {
+        delete process.env.GIT_CONFIG_PARAMETERS;
+      } else {
+        process.env.GIT_CONFIG_PARAMETERS = previousParameters;
+      }
+    }
+  });
+
+  test("rejects repository-local info attributes", async () => {
+    const fixture = makeFixture();
+    const infoAttributes = runGit(fixture.checkout, [
+      "rev-parse",
+      "--git-path",
+      "info/attributes",
+    ]).trim();
+    writeFile(resolve(fixture.checkout, infoAttributes), "*.md -text\n");
+
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        {
+          path: "concepts/deploy-runbook.md",
+          content: `${DEPLOY_CONTENT}\nRejected update.\n`,
+        },
+      ]),
+    );
+
+    expect(result.reply.isError).toBe(true);
+    expect(errorCode(result.body)).toBe("REPOSITORY_MISMATCH");
+    expect(remoteHead(fixture)).toBe(fixture.expectedHead);
+  });
+
+  test("rejects invalid Markdown produced by repository clean filters", async () => {
+    const cases = [
+      {
+        name: "oversized",
+        output: Buffer.alloc(70_000, "x"),
+        script: "head -c 70000 /dev/zero | tr '\\000' x",
+      },
+      { name: "invalid-utf8", output: Buffer.from([0xff]), script: "printf '\\377'" },
+      {
+        name: "nul",
+        output: Buffer.from("valid\0invalid\n"),
+        script: "printf 'valid\\000invalid\\n'",
+      },
+      { name: "blank", output: Buffer.from("   \n"), script: "printf '   \\n'" },
+    ];
+
+    for (const testCase of cases) {
+      const fixture = makeFixture();
+      const attributes = advanceFromClone(
+        fixture,
+        `${testCase.name}-attribute-writer`,
+        ".gitattributes",
+        `*.md filter=${testCase.name}\n`,
+      );
+      configureCleanFilter(fixture, testCase.name, testCase.script);
+
+      const result = await publish(
+        fixture,
+        proposal(attributes.sha, [
+          {
+            path: "concepts/deploy-runbook.md",
+            content: `${DEPLOY_CONTENT}\nFiltered update.\n`,
+          },
+        ]),
+      );
+
+      expect(result.reply.isError).toBe(true);
+      expect(errorCode(result.body)).toBe("CONTENT_LIMIT");
+      expect(remoteHead(fixture)).toBe(attributes.sha);
+      const rejected = join(fixture.root, `${testCase.name}-filtered.bin`);
+      writeFileSync(rejected, testCase.output);
+      const rejectedOid = runGit(fixture.checkout, [
+        "hash-object",
+        "--no-filters",
+        rejected,
+      ]).trim();
+      expect(() => runGit(fixture.checkout, ["cat-file", "-e", rejectedOid])).toThrow();
+      expect(
+        readdirSync(join(fixture.pluginDir, "data")).some((name) =>
+          name.startsWith("publish-objects."),
+        ),
+      ).toBe(false);
+    }
+  }, 15_000);
 
   test("returns a no-op without creating a commit when content already matches", async () => {
     const fixture = makeFixture();
