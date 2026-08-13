@@ -83,5 +83,6 @@ For the proof of concept:
 3. Enable the `plugin-schedules` feature flag on the assistant.
 4. Restart the daemon.
 
-The sync schedule itself is not in this repo yet. The full runbook lands in
-`docs/QA.md`.
+[`docs/QA.md`](docs/QA.md) is the step-by-step runbook: it builds a throwaway
+content repo, installs the plugin against it, and verifies the whole path end to
+end. It also lists this version's known limitations.
