@@ -7,7 +7,7 @@
     "@vellumai/plugin-api": "^0.11.0"
   },
   "devDependencies": {
-    "@vellumai/plugin-api": "file:../vellum-assistant/assistant/src/plugin-api"
-  },
-  "vellum": {}
+    "@types/bun": "^1.3.14",
+    "@vellumai/plugin-api": "^0.11.0"
+  }
 }
