@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  ConceptPathError,
   MAX_CONCEPT_FILE_BYTES,
   validateConceptPath,
 } from "./concept-path.js";
@@ -428,13 +429,23 @@ export async function searchConcepts(
     .split("\0")
     .filter((entry) => entry.length > 0)
     .map((entry) => (entry.startsWith(prefix) ? entry.slice(prefix.length) : entry));
-  const selected = allPaths.slice(0, MAX_QUERY_MATCHES);
+  const validPaths: string[] = [];
+  for (const path of allPaths) {
+    checkCancellation(signal);
+    try {
+      validPaths.push(validateConceptPath(path));
+    } catch (error) {
+      if (!(error instanceof ConceptPathError)) {
+        throw error;
+      }
+    }
+  }
+  const selected = validPaths.slice(0, MAX_QUERY_MATCHES);
   const matches: ConceptMatch[] = [];
   for (const path of selected) {
     checkCancellation(signal);
-    const validated = validateConceptPath(path);
-    const content = await readConcept(revision, validated, signal);
-    matches.push({ path: validated, ...excerptFor(content, query) });
+    const content = await readConcept(revision, path, signal);
+    matches.push({ path, ...excerptFor(content, query) });
   }
-  return { matches, truncated: allPaths.length > selected.length };
+  return { matches, truncated: validPaths.length > selected.length };
 }

@@ -187,6 +187,21 @@ describe("shared memory inspection", () => {
     expect(body.matches).toEqual([]);
   });
 
+  test("skips malformed search hits without discarding valid matches", async () => {
+    const fixture = makeFixture();
+    writeFile(join(fixture.contentRepo, "concepts", "release-process.md"), "shared-needle\n");
+    writeFile(join(fixture.contentRepo, "concepts", "Invalid.md"), "shared-needle\n");
+    writeFile(join(fixture.contentRepo, "concepts", "skills", "deploy.md"), "shared-needle\n");
+    fixture.expectedHead = commit(fixture.contentRepo, "add mixed-path search matches");
+
+    const { reply, body } = await inspect(fixture, { query: "shared-needle" });
+
+    expect(reply.isError).toBe(false);
+    expect(body.matches).toEqual([
+      expect.objectContaining({ path: "concepts/release-process.md" }),
+    ]);
+  });
+
   test("reads exact concept files but does not expose unrelated repository files", async () => {
     const fixture = makeFixture();
     const { reply, body } = await inspect(fixture, {
