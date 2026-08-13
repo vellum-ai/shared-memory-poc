@@ -84,7 +84,7 @@ if [ -d "$REPO/.git" ]; then
   fi
 
   repo_ok=1
-  if ! git -C "$REPO" pull --rebase --autostash; then
+  if ! git -C "$REPO" pull --quiet --rebase --autostash; then
     repo_ok=0
     # A lock too young to clear may belong to a git process that is still
     # running, most likely the outbound half part way through a write.
@@ -143,7 +143,7 @@ if [ -d "$REPO/.git" ]; then
     # rather than deleted: a clone that fails here leaves the old one serving
     # them until a later tick succeeds.
     REPO_NEW="$DATA/repo.new.$$"
-    if ! git clone --branch "$BRANCH" "$REPO_URL" "$REPO_NEW"; then
+    if ! git clone --quiet --branch "$BRANCH" "$REPO_URL" "$REPO_NEW"; then
       echo "shared-memory: cannot refresh $REPO and the replacement clone failed too, so the old one is kept for now"
       exit 1
     fi
@@ -166,7 +166,7 @@ if [ ! -d "$REPO/.git" ]; then
     mv "$REPO" "$DATA/repo.old.$$"
     rm -rf "$DATA/repo.old.$$"
   fi
-  git clone --branch "$BRANCH" "$REPO_URL" "$REPO"
+  git clone --quiet --branch "$BRANCH" "$REPO_URL" "$REPO"
 fi
 
 HEAD_SHA="$(git -C "$REPO" rev-parse HEAD)"

@@ -274,8 +274,9 @@ nothing here, even though it ran: the script calls it with `--json` and captures
 its stdout to read the summary, so only the reseed's line reaches the run.
 
 The scheduler stores stdout in `output` and stderr in `error`, so a run that
-succeeded can still have text in `error`. Git writes its clone banner to stderr,
-which is where the first sync's `Cloning into '…'` shows up:
+succeeded can still have text in `error`. The script quiets git's routine
+chatter, so on a healthy run `error` is empty; anything that does appear there
+is real signal:
 
 ```bash
 assistant schedules runs "$SCHED" --limit 1 --json | jq -r '.runs[0].error'
