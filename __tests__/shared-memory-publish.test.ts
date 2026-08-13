@@ -375,6 +375,34 @@ describe("atomic shared memory publishing", () => {
     expect(remoteFile(fixture, "concepts/global.md")).toBe(content);
   });
 
+  test("ignores inherited command-scope attributes while publishing", async () => {
+    const fixture = makeFixture();
+    const attributes = join(fixture.root, "command-attributes");
+    writeFile(attributes, "concepts/inherited.md filter=command-override\n");
+    configureCleanFilter(fixture, "command-override", "printf 'overridden\\n'");
+    const previousParameters = process.env.GIT_CONFIG_PARAMETERS;
+    process.env.GIT_CONFIG_PARAMETERS = `'core.attributesFile'='${attributes}'`;
+    const content = `${DEPLOY_CONTENT}\nRepository content.\n`;
+
+    try {
+      const result = await publish(
+        fixture,
+        proposal(fixture.expectedHead, [
+          { path: "concepts/inherited.md", content },
+        ]),
+      );
+
+      expect(result.reply.isError).toBe(false);
+      expect(remoteFile(fixture, "concepts/inherited.md")).toBe(content);
+    } finally {
+      if (previousParameters === undefined) {
+        delete process.env.GIT_CONFIG_PARAMETERS;
+      } else {
+        process.env.GIT_CONFIG_PARAMETERS = previousParameters;
+      }
+    }
+  });
+
   test("rejects repository-local info attributes", async () => {
     const fixture = makeFixture();
     const infoAttributes = runGit(fixture.checkout, [

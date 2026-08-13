@@ -334,6 +334,7 @@ async function changedUpserts(
       GIT_ATTR_NOSYSTEM: "1",
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "core.attributesFile",
+      GIT_CONFIG_PARAMETERS: "",
       GIT_CONFIG_VALUE_0: emptyAttributes,
     };
     const sourceCheck = await runRepositoryGit(
