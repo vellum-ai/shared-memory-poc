@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -23,6 +22,7 @@ import {
   SKILLS_LINK_TARGET,
   untrackPluginPath,
 } from "../src/workspace-setup.js";
+import { identify, runGit } from "./git-fixture.js";
 
 const PLUGIN_REL_PATH = "plugins/shared-memory";
 const EXCLUDE_LINE = `/${PLUGIN_REL_PATH}/`;
@@ -34,22 +34,6 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
-
-function runGit(cwd: string, args: string[]): string {
-  // stderr is captured so the hints git prints about embedded repos, and the
-  // commands a test fails on purpose, stay out of the test output.
-  return execFileSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-function identify(repo: string): void {
-  runGit(repo, ["config", "user.name", "Fixture"]);
-  runGit(repo, ["config", "user.email", "fixture@example.com"]);
-  runGit(repo, ["config", "commit.gpgsign", "false"]);
-}
 
 function initRepo(root: string): void {
   runGit(root, ["init", "-q", "-b", "main"]);

@@ -19,7 +19,29 @@ fi
 
 BRANCH="$(jq -r '.branch // "main"' "$CONFIG")"
 
+# The staging directory the pages are ingested from and the replacement clone,
+# neither of which may outlive the run.
+STAGE=""
+REPO_NEW=""
+cleanup() {
+  if [ -n "$STAGE" ]; then
+    rm -rf "$STAGE"
+  fi
+  if [ -n "$REPO_NEW" ]; then
+    rm -rf "$REPO_NEW"
+  fi
+}
+trap cleanup EXIT
+
 if [ -d "$REPO/.git" ]; then
+  # A tick killed by the schedule timeout leaves the index lock behind, and
+  # every later git write fails on it, including the rebase abort below. No real
+  # git operation holds the lock for half an hour, and the engine runs one sync
+  # at a time, so a lock that old belongs to a process that is gone.
+  if [ -n "$(find "$REPO/.git" -maxdepth 1 -name index.lock -mmin +30 2>/dev/null)" ]; then
+    rm -f "$REPO/.git/index.lock"
+  fi
+
   # A tick killed by the schedule timeout, or a pull that stopped on a conflict,
   # leaves rebase state behind that every later pull refuses to run over.
   if [ -d "$REPO/.git/rebase-merge" ] || [ -d "$REPO/.git/rebase-apply" ]; then
@@ -55,22 +77,37 @@ if [ -d "$REPO/.git" ]; then
       safe=1
     fi
 
-    # A clone the timeout killed part way through has no commit at HEAD, and a
-    # repo with no commits cannot be holding unpushed work. Files in the tree
-    # still count as work, so an unborn clone that is dirty is kept.
+    # A clone the timeout killed part way through has no commit at HEAD. The
+    # checked out branch holds nothing, but another branch and the stash still
+    # can, so those two checks are asked again here. Files in the tree count as
+    # work too, so an unborn clone that is dirty is kept.
     if [ "$safe" = "0" ] &&
       ! git -C "$REPO" rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1 &&
+      LOCAL_ONLY="$(git -C "$REPO" log --branches --not --remotes --format=%H)" &&
+      STASHED="$(git -C "$REPO" stash list)" &&
       DIRTY="$(git -C "$REPO" status --porcelain)" &&
-      [ -z "$DIRTY" ]; then
+      [ -z "$LOCAL_ONLY" ] && [ -z "$STASHED" ] && [ -z "$DIRTY" ]; then
       safe=1
     fi
 
     if [ "$safe" = "0" ]; then
-      echo "shared-memory: cannot refresh $REPO, and it holds local work, so it is preserved untouched; resolve it by hand"
+      echo "shared-memory: cannot refresh $REPO, so it is preserved untouched; it may hold local work or be in a state sync cannot judge, so inspect it with git status and resolve by hand"
+      exit 1
+    fi
+
+    # The clone is the only copy of the shared skills on disk, so it is replaced
+    # rather than deleted: a clone that fails here leaves the old one serving
+    # them until a later tick succeeds.
+    REPO_NEW="$DATA/repo.new.$$"
+    rm -rf "$REPO_NEW"
+    if ! git clone --branch "$BRANCH" "$REPO_URL" "$REPO_NEW"; then
+      echo "shared-memory: cannot refresh $REPO and the replacement clone failed too, so the old one is kept for now"
       exit 1
     fi
 
     rm -rf "$REPO"
+    mv "$REPO_NEW" "$REPO"
+    REPO_NEW=""
   fi
 fi
 
@@ -110,7 +147,6 @@ fi
 
 if [ "$sync_pages" = "1" ] && [ -d "$REPO/concepts" ] && [ -n "$(find "$REPO/concepts" -type f)" ]; then
   STAGE="$(mktemp -d)"
-  trap 'rm -rf "$STAGE"' EXIT
   # Pages are ingested under the shared/ slug prefix, so the staging directory
   # nests the repo's concepts under a shared/ directory.
   mkdir -p "$STAGE/shared"
