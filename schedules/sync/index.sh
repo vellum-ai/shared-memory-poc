@@ -5,6 +5,7 @@ PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DATA="$PLUGIN_DIR/data"
 REPO="$DATA/repo"
 CONFIG="$PLUGIN_DIR/config.json"
+LOCK="$DATA/sync.lock"
 
 if [ ! -f "$CONFIG" ]; then
   echo "shared-memory: unconfigured, skipping"
@@ -19,10 +20,11 @@ fi
 
 BRANCH="$(jq -r '.branch // "main"' "$CONFIG")"
 
-# The staging directory the pages are ingested from and the replacement clone,
-# neither of which may outlive the run.
+# The staging directory the pages are ingested from, the replacement clone and
+# the lock, none of which may outlive the run.
 STAGE=""
 REPO_NEW=""
+LOCK_HELD=0
 cleanup() {
   if [ -n "$STAGE" ]; then
     rm -rf "$STAGE"
@@ -30,14 +32,47 @@ cleanup() {
   if [ -n "$REPO_NEW" ]; then
     rm -rf "$REPO_NEW"
   fi
+  if [ "$LOCK_HELD" = "1" ]; then
+    rm -rf "$LOCK"
+  fi
 }
 trap cleanup EXIT
+
+mkdir -p "$DATA"
+
+# Two syncs can be in flight at once: the schedule fires on its own cadence and
+# a manual run executes inline without checking for one already going. mkdir is
+# the atomic primitive every filesystem has, so the lock is a directory.
+if ! mkdir "$LOCK" 2>/dev/null; then
+  # The schedule timeout kills the run outright, so the trap above does not run
+  # and the lock stays behind. That timeout can be set no higher than 30
+  # minutes, so a lock older than 35 belongs to a run that is gone.
+  if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +35 2>/dev/null)" ]; then
+    rm -rf "$LOCK"
+  fi
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    echo "shared-memory: another sync appears to be running, skipping this tick"
+    exit 0
+  fi
+fi
+LOCK_HELD=1
+
+# A killed run leaves its replacement clone, or the clone it was replacing, on
+# disk. Both are inert copies, and the lock above means no other run is using
+# them.
+for leftover in "$DATA"/repo.new.* "$DATA"/repo.old.*; do
+  if [ -e "$leftover" ]; then
+    rm -rf "$leftover"
+    echo "shared-memory: removed $leftover, left behind by an interrupted run"
+  fi
+done
 
 if [ -d "$REPO/.git" ]; then
   # A tick killed by the schedule timeout leaves the index lock behind, and
   # every later git write fails on it, including the rebase abort below. No real
-  # git operation holds the lock for half an hour, and the engine runs one sync
-  # at a time, so a lock that old belongs to a process that is gone.
+  # git operation holds the lock for half an hour, and the sync lock keeps a
+  # second sync off the clone, so a lock that old belongs to a process that is
+  # gone.
   if [ -n "$(find "$REPO/.git" -maxdepth 1 -name index.lock -mmin +30 2>/dev/null)" ]; then
     rm -f "$REPO/.git/index.lock"
   fi
@@ -51,6 +86,14 @@ if [ -d "$REPO/.git" ]; then
   repo_ok=1
   if ! git -C "$REPO" pull --rebase --autostash; then
     repo_ok=0
+    # A lock too young to clear may belong to a git process that is still
+    # running, most likely the outbound half part way through a write.
+    # Replacing the clone would destroy that work, so the run stops here
+    # instead of reaching the replacement below.
+    if [ -e "$REPO/.git/index.lock" ]; then
+      echo "shared-memory: $REPO/.git/index.lock is too new to clear, so a git process may still be writing to the clone; it is left alone and the next tick tries again"
+      exit 1
+    fi
   fi
 
   # A branch change in config lands on a clone that is still on the old branch,
@@ -62,31 +105,32 @@ if [ -d "$REPO/.git" ]; then
 
   if [ "$repo_ok" = "0" ]; then
     # The clone is shared with the outbound half, so throwing it away is gated
-    # on four checks: the checked out branch tracks an upstream and is not ahead
-    # of it, no local branch holds a commit the remote does not have, the stash
-    # is empty, and the tree is clean. Every check has to answer yes, and a
-    # check that cannot answer counts as a no.
-    safe=0
-    if git -C "$REPO" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1 &&
-      UNPUSHED="$(git -C "$REPO" rev-list '@{upstream}..HEAD')" &&
-      LOCAL_ONLY="$(git -C "$REPO" log --branches --not --remotes --format=%H)" &&
-      STASHED="$(git -C "$REPO" stash list)" &&
-      DIRTY="$(git -C "$REPO" status --porcelain)" &&
-      [ -z "$UNPUSHED" ] && [ -z "$LOCAL_ONLY" ] && [ -z "$STASHED" ] &&
-      [ -z "$DIRTY" ]; then
-      safe=1
-    fi
-
-    # A clone the timeout killed part way through has no commit at HEAD. The
-    # checked out branch holds nothing, but another branch and the stash still
-    # can, so those two checks are asked again here. Files in the tree count as
-    # work too, so an unborn clone that is dirty is kept.
-    if [ "$safe" = "0" ] &&
-      ! git -C "$REPO" rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1 &&
-      LOCAL_ONLY="$(git -C "$REPO" log --branches --not --remotes --format=%H)" &&
+    # on local work being absent. Local work is a commit no remote has, a stash
+    # entry, or anything in the tree. Every check has to answer yes, and a check
+    # that cannot answer counts as a no.
+    work_free=0
+    if LOCAL_ONLY="$(git -C "$REPO" log --branches --not --remotes --format=%H)" &&
       STASHED="$(git -C "$REPO" stash list)" &&
       DIRTY="$(git -C "$REPO" status --porcelain)" &&
       [ -z "$LOCAL_ONLY" ] && [ -z "$STASHED" ] && [ -z "$DIRTY" ]; then
+      work_free=1
+    fi
+
+    # The checked out branch tracks an upstream and is not ahead of it.
+    safe=0
+    if [ "$work_free" = "1" ] &&
+      git -C "$REPO" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1 &&
+      UNPUSHED="$(git -C "$REPO" rev-list '@{upstream}..HEAD')" &&
+      [ -z "$UNPUSHED" ]; then
+      safe=1
+    fi
+
+    # A clone the timeout killed part way through has no commit at HEAD, so it
+    # has no upstream to compare against and can hold no unpushed commit. The
+    # other checks still apply: another branch, the stash and the tree can all
+    # hold work.
+    if [ "$safe" = "0" ] && [ "$work_free" = "1" ] &&
+      ! git -C "$REPO" rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1; then
       safe=1
     fi
 
@@ -105,13 +149,24 @@ if [ -d "$REPO/.git" ]; then
       exit 1
     fi
 
-    rm -rf "$REPO"
+    # Two renames inside data/, which are atomic, so the path at data/repo holds
+    # either the old clone or the new one and never a directory being emptied.
+    REPO_OLD="$DATA/repo.old.$$"
+    mv "$REPO" "$REPO_OLD"
     mv "$REPO_NEW" "$REPO"
     REPO_NEW=""
+    rm -rf "$REPO_OLD"
   fi
 fi
 
 if [ ! -d "$REPO/.git" ]; then
+  # A run killed during the swap above, or during its own first clone, can leave
+  # a directory here with no .git in it at all, and git clone refuses a
+  # destination that holds files. Renaming it away empties the path in one step.
+  if [ -e "$REPO" ] && [ ! -e "$REPO/.git" ]; then
+    mv "$REPO" "$DATA/repo.old.$$"
+    rm -rf "$DATA/repo.old.$$"
+  fi
   git clone --branch "$BRANCH" "$REPO_URL" "$REPO"
 fi
 

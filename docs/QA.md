@@ -246,6 +246,13 @@ SCHED=$(assistant schedules list --json \
 assistant schedules execute "$SCHED"
 ```
 
+The schedule may fire on its own cadence while you do this. Overlapping runs are
+safe: sync takes a lock, and whichever run reaches it second prints
+`shared-memory: another sync appears to be running, skipping this tick` and
+exits 0 without touching anything. If that is what your run says, read the other
+run's output instead. See
+[One sync at a time](../README.md#one-sync-at-a-time) in the README.
+
 Read the run:
 
 ```bash
@@ -569,6 +576,13 @@ current writer finishes.` Ingest holds that lock while it writes, so a
 concurrent consolidation pass locks it out. This is expected contention, not a
 bug. Wait and re-run.
 
+**A `.git/index.lock` sync will not clear.** The line names the lock and ends
+`the next tick tries again`. Something was writing to the clone when the pull
+ran, so sync deferred instead of risking that work. It resolves once the writer
+finishes, and a lock still there after 30 minutes is deleted on the next tick.
+See [Recovering a wedged clone](../README.md#recovering-a-wedged-clone) in the
+README.
+
 **`jq: command not found`.** Install `jq`.
 
 **`assistant: command not found`.** Only happens when you run the script by
@@ -585,10 +599,8 @@ The run exits nonzero and ends with this line:
 shared-memory: cannot refresh <repo path>, so it is preserved untouched; it may hold local work or be in a state sync cannot judge, so inspect it with git status and resolve by hand
 ```
 
-A failed pull heals itself unless the clone is preserved, and the clone is
-preserved whenever sync could not prove it free of local work. That is a wider
-net than holding local work. A detached HEAD, or a branch with no upstream, is
-preserved too, and either can hold nothing at all. See
+Sync preserves any clone it cannot prove free of local work, which is a wider
+net than holding some. For what that covers, see
 [Recovering a wedged clone](../README.md#recovering-a-wedged-clone) in the
 README.
 

@@ -22,7 +22,7 @@ import {
   SKILLS_LINK_TARGET,
   untrackPluginPath,
 } from "../src/workspace-setup.js";
-import { identify, runGit } from "./git-fixture.js";
+import { commit, initRepo, runGit } from "./git-fixture.js";
 
 const PLUGIN_REL_PATH = "plugins/shared-memory";
 const EXCLUDE_LINE = `/${PLUGIN_REL_PATH}/`;
@@ -35,9 +35,8 @@ afterEach(() => {
   }
 });
 
-function initRepo(root: string): void {
-  runGit(root, ["init", "-q", "-b", "main"]);
-  identify(root);
+function initWorkspaceRepo(root: string): void {
+  initRepo(root);
   // git's own template exclude file would blur the assertions about what the
   // hook writes into the exclude.
   rmSync(join(root, ".git", "info", "exclude"), { force: true });
@@ -45,8 +44,7 @@ function initRepo(root: string): void {
 
 /** Commits everything in the workspace the way its daemon's `git add -A` would. */
 function autoCommit(root: string): void {
-  runGit(root, ["add", "-A"]);
-  runGit(root, ["commit", "-q", "-m", "workspace auto-commit"]);
+  commit(root, "workspace auto-commit");
 }
 
 function trackedPaths(root: string, relPath: string): string {
@@ -64,7 +62,7 @@ function makeWorkspace({ git = true }: { git?: boolean } = {}) {
   const pluginDir = join(root, PLUGIN_REL_PATH);
   const storageDir = join(pluginDir, "data");
   mkdirSync(storageDir, { recursive: true });
-  if (git) initRepo(root);
+  if (git) initWorkspaceRepo(root);
   return { root, pluginDir, storageDir, excludePath: join(root, ".git", "info", "exclude") };
 }
 
@@ -285,8 +283,7 @@ describe("init hook", () => {
     const { root, pluginDir, storageDir } = makeWorkspace();
     initRepo(pluginDir);
     writeFileSync(join(pluginDir, "package.json"), "{}\n");
-    runGit(pluginDir, ["add", "-A"]);
-    runGit(pluginDir, ["commit", "-q", "-m", "install the plugin"]);
+    commit(pluginDir, "install the plugin");
     autoCommit(root);
     expect(runGit(root, ["ls-files", "-s", "--", PLUGIN_REL_PATH])).toMatch(/^160000 /);
 

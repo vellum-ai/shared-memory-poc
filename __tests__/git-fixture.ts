@@ -1,6 +1,7 @@
 /** Git helpers shared by the test files that build repo fixtures. */
 
 import { execFileSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
 
 /**
  * Runs git in `cwd` and returns its stdout.
@@ -22,4 +23,18 @@ export function identify(repo: string): void {
   runGit(repo, ["config", "user.name", "Fixture"]);
   runGit(repo, ["config", "user.email", "fixture@example.com"]);
   runGit(repo, ["config", "commit.gpgsign", "false"]);
+}
+
+/** Creates `root` if needed and makes it a repo on `main` that can commit. */
+export function initRepo(root: string): void {
+  mkdirSync(root, { recursive: true });
+  runGit(root, ["init", "-q", "-b", "main"]);
+  identify(root);
+}
+
+/** Commits everything in `repo` and returns the new sha. */
+export function commit(repo: string, message: string): string {
+  runGit(repo, ["add", "-A"]);
+  runGit(repo, ["commit", "-q", "-m", message]);
+  return runGit(repo, ["rev-parse", "HEAD"]).trim();
 }
