@@ -143,7 +143,6 @@ if [ -d "$REPO/.git" ]; then
     # rather than deleted: a clone that fails here leaves the old one serving
     # them until a later tick succeeds.
     REPO_NEW="$DATA/repo.new.$$"
-    rm -rf "$REPO_NEW"
     if ! git clone --branch "$BRANCH" "$REPO_URL" "$REPO_NEW"; then
       echo "shared-memory: cannot refresh $REPO and the replacement clone failed too, so the old one is kept for now"
       exit 1
