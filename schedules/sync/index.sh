@@ -22,8 +22,56 @@ fi
 BRANCH="$(jq -r '.branch // "main"' "$CONFIG")"
 
 if [ -d "$REPO/.git" ]; then
-  git -C "$REPO" pull --rebase --autostash
-else
+  # A tick killed by the schedule timeout, or a pull that stopped on a conflict,
+  # leaves rebase state behind that every later pull refuses to run over.
+  if [ -d "$REPO/.git/rebase-merge" ] || [ -d "$REPO/.git/rebase-apply" ]; then
+    git -C "$REPO" rebase --abort || true
+  fi
+
+  repo_ok=1
+  if ! git -C "$REPO" pull --rebase --autostash; then
+    repo_ok=0
+  fi
+
+  # A branch change in config lands on a clone that is still on the old branch,
+  # which no pull can fix.
+  CURRENT_BRANCH="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ "$CURRENT_BRANCH" != "$BRANCH" ]; then
+    repo_ok=0
+  fi
+
+  if [ "$repo_ok" = "0" ]; then
+    # The clone is shared with the outbound half, so throwing it away is gated on
+    # everything in it already being on the remote. Every check has to answer
+    # yes, and a check that cannot answer counts as a no.
+    safe=0
+    if git -C "$REPO" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1 &&
+      UNPUSHED="$(git -C "$REPO" rev-list '@{upstream}..HEAD')" &&
+      DIRTY="$(git -C "$REPO" status --porcelain)" &&
+      [ -z "$UNPUSHED" ] && [ -z "$DIRTY" ]; then
+      safe=1
+    fi
+
+    # A clone the timeout killed part way through has no commit at HEAD, and a
+    # repo with no commits cannot be holding unpushed work. Files in the tree
+    # still count as work, so an unborn clone that is dirty is kept.
+    if [ "$safe" = "0" ] &&
+      ! git -C "$REPO" rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1 &&
+      DIRTY="$(git -C "$REPO" status --porcelain)" &&
+      [ -z "$DIRTY" ]; then
+      safe=1
+    fi
+
+    if [ "$safe" = "0" ]; then
+      echo "shared-memory: cannot refresh $REPO, and it holds local work, so it is preserved untouched; resolve it by hand"
+      exit 1
+    fi
+
+    rm -rf "$REPO"
+  fi
+fi
+
+if [ ! -d "$REPO/.git" ]; then
   git clone --branch "$BRANCH" "$REPO_URL" "$REPO"
 fi
 
@@ -64,7 +112,24 @@ if [ "$sync_pages" = "1" ] && [ -d "$REPO/concepts" ] && [ -n "$(find "$REPO/con
   # nests the repo's concepts under a shared/ directory.
   mkdir -p "$STAGE/shared"
   cp -R "$REPO/concepts/." "$STAGE/shared/"
-  assistant memory ingest --dir "$STAGE" --overwrite
+
+  # Ingest exits non-zero both when the batch never ran and when it ran and
+  # rejected some pages, so the outcome is read from the --json summary rather
+  # than from the exit code. A page that can never validate would otherwise pin
+  # the watermark and re-ingest the whole tree on every tick, forever.
+  INGEST_JSON="$(assistant memory ingest --dir "$STAGE" --overwrite --json || true)"
+
+  if ! jq -e '(.ok != false) and ((.written | type) == "number")' >/dev/null 2>&1 <<<"$INGEST_JSON"; then
+    INGEST_ERROR="$(jq -r '.error // empty' <<<"$INGEST_JSON" 2>/dev/null || true)"
+    echo "shared-memory: ingest did not complete (${INGEST_ERROR:-no JSON summary}), watermark unchanged"
+    exit 1
+  fi
+
+  INVALID_SLUGS="$(jq -r '[.results[]? | select(.action == "invalid") | .slug] | join(", ")' <<<"$INGEST_JSON")"
+  if [ -n "$INVALID_SLUGS" ]; then
+    echo "shared-memory: warning: rejected pages were skipped: $INVALID_SLUGS"
+  fi
+
   pages_result="ingested"
 fi
 
