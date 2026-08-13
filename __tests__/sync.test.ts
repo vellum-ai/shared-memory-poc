@@ -253,6 +253,17 @@ function markClone(fixture: Fixture): string {
   return marker;
 }
 
+// Replaces the clone with what a clone killed by the schedule timeout leaves: a
+// .git that knows the remote but has no commit at HEAD yet.
+function makePartialClone(fixture: Fixture): string {
+  const clone = clonePath(fixture);
+  rmSync(clone, { recursive: true, force: true });
+  mkdirSync(clone, { recursive: true });
+  git(clone, ["init", "-q", "-b", "main"]);
+  git(clone, ["remote", "add", "origin", `file://${fixture.content}`]);
+  return clone;
+}
+
 afterAll(() => {
   for (const root of roots) {
     rmSync(root, { recursive: true, force: true });
@@ -452,6 +463,46 @@ describe("clone recovery", () => {
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout).toContain("preserved");
     expect(existsSync(join(clone, "concepts", "wip.md"))).toBe(true);
+    expect(lastSha(fixture)).toBe(seedSha);
+  });
+
+  test("a clone that never finished is replaced", () => {
+    const fixture = makeFixture();
+    expect(runSync(fixture).exitCode).toBe(0);
+
+    const clone = makePartialClone(fixture);
+    // The state the script has to read: no commit at HEAD, nothing in the tree.
+    expect(() => git(clone, ["rev-parse", "--verify", "HEAD^{commit}"])).toThrow();
+    expect(() => git(clone, ["rev-parse", "--abbrev-ref", "@{upstream}"])).toThrow();
+    expect(git(clone, ["status", "--porcelain"])).toBe("");
+
+    writeFile(join(fixture.content, "concepts", "oncall.md"), "---\ntitle: On-call\n---\n\nWho is on call.\n");
+    const sha = commit(fixture.content, "add the on-call page");
+    resetCalls(fixture);
+
+    const result = runSync(fixture);
+
+    expect(result.exitCode).toBe(0);
+    expect(git(clone, ["rev-parse", "HEAD"]).trim()).toBe(sha);
+    expect(calls(fixture)[0]).toMatch(/^memory ingest --dir \S+ --overwrite --json$/);
+    expect(lastSha(fixture)).toBe(sha);
+  });
+
+  test("a clone that never finished but has files in it is preserved", () => {
+    const fixture = makeFixture();
+    expect(runSync(fixture).exitCode).toBe(0);
+    const seedSha = lastSha(fixture);
+
+    const clone = makePartialClone(fixture);
+    writeFile(join(clone, "concepts", "draft.md"), "---\ntitle: Draft\n---\n\nNot pushed yet.\n");
+    resetCalls(fixture);
+
+    const result = runSync(fixture);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toContain("preserved");
+    expect(existsSync(join(clone, "concepts", "draft.md"))).toBe(true);
+    expect(calls(fixture)).toEqual([]);
     expect(lastSha(fixture)).toBe(seedSha);
   });
 

@@ -52,6 +52,16 @@ if [ -d "$REPO/.git" ]; then
       safe=1
     fi
 
+    # A clone the timeout killed part way through has no commit at HEAD, and a
+    # repo with no commits cannot be holding unpushed work. Files in the tree
+    # still count as work, so an unborn clone that is dirty is kept.
+    if [ "$safe" = "0" ] &&
+      ! git -C "$REPO" rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1 &&
+      DIRTY="$(git -C "$REPO" status --porcelain)" &&
+      [ -z "$DIRTY" ]; then
+      safe=1
+    fi
+
     if [ "$safe" = "0" ]; then
       echo "shared-memory: cannot refresh $REPO, and it holds local work, so it is preserved untouched; resolve it by hand"
       exit 1
