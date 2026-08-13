@@ -198,16 +198,20 @@ async function resolveCommitIdentity(
   repoDir: string,
   signal?: AbortSignal,
 ): Promise<Record<string, string>> {
-  const [nameResult, emailResult] = await Promise.all([
-    runRepositoryGit(repoDir, ["config", "--get", "user.name"], {
+  const readConfig = (key: string) =>
+    runRepositoryGit(repoDir, ["config", "--get", key], {
       signal,
       allowedExitCodes: [0, 1],
-    }),
-    runRepositoryGit(repoDir, ["config", "--get", "user.email"], {
-      signal,
-      allowedExitCodes: [0, 1],
-    }),
-  ]);
+    });
+  const [authorNameResult, authorEmailResult, userNameResult, userEmailResult] =
+    await Promise.all([
+      readConfig("author.name"),
+      readConfig("author.email"),
+      readConfig("user.name"),
+      readConfig("user.email"),
+    ]);
+  const nameResult = authorNameResult.exitCode === 0 ? authorNameResult : userNameResult;
+  const emailResult = authorEmailResult.exitCode === 0 ? authorEmailResult : userEmailResult;
   const name = outputText(nameResult.stdout);
   const email = outputText(emailResult.stdout);
   if (
@@ -220,7 +224,7 @@ async function resolveCommitIdentity(
   ) {
     throw new SharedMemoryPublishError(
       "GIT_IDENTITY_MISSING",
-      "Configure user.name and user.email for the shared-memory repository before publishing.",
+      "Configure a Git author name and email for the shared-memory repository before publishing.",
     );
   }
   return {

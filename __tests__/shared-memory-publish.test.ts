@@ -339,6 +339,34 @@ describe("atomic shared memory publishing", () => {
     expect(remoteHead(fixture)).toBe(fixture.expectedHead);
   });
 
+  test("honors author identity overrides from Git config", async () => {
+    const fixture = makeFixture();
+    runGit(fixture.checkout, ["config", "author.name", "Example User"]);
+    runGit(fixture.checkout, ["config", "author.email", "user@example.com"]);
+
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        {
+          path: "concepts/deploy-runbook.md",
+          content: `${DEPLOY_CONTENT}\nAuthor override update.\n`,
+        },
+      ]),
+    );
+
+    expect(result.reply.isError).toBe(false);
+    expect(
+      runGit(fixture.root, [
+        "--git-dir",
+        fixture.remote,
+        "show",
+        "-s",
+        "--format=%an%n%ae",
+        result.body.commitSha as string,
+      ]).trim(),
+    ).toBe("Example User\nuser@example.com");
+  });
+
   test("rejects a proposal when sharing guidance changed after inspection", async () => {
     const originalGuidance = "Share release runbooks only.";
     const fixture = makeFixture({ sharingGuidance: originalGuidance });
