@@ -407,10 +407,10 @@ export async function findConceptTreeEntry(
   }
 
   const size = Number.parseInt(match[4], 10);
-  if (!Number.isSafeInteger(size) || size < 0 || size > MAX_CONCEPT_FILE_BYTES) {
+  if (!Number.isSafeInteger(size) || size < 0) {
     throw new SharedMemoryRepositoryError(
-      "CONTENT_LIMIT",
-      `${validated} exceeds the ${MAX_CONCEPT_FILE_BYTES}-byte inspection limit.`,
+      "REPOSITORY_ERROR",
+      `Git returned an invalid size for ${validated}.`,
     );
   }
   return { mode: match[1] as ConceptTreeEntry["mode"], oid: match[3], size };
@@ -425,6 +425,12 @@ async function readConcept(
   const entry = await findConceptTreeEntry(revision, validated, signal);
   if (!entry) {
     throw new SharedMemoryRepositoryError("PATH_NOT_FOUND", `No shared concept exists at ${validated}.`);
+  }
+  if (entry.size > MAX_CONCEPT_FILE_BYTES) {
+    throw new SharedMemoryRepositoryError(
+      "CONTENT_LIMIT",
+      `${validated} exceeds the ${MAX_CONCEPT_FILE_BYTES}-byte inspection limit.`,
+    );
   }
 
   const blob = await runRepositoryGit(

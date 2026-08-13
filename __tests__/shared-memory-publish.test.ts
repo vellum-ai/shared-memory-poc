@@ -675,6 +675,25 @@ describe("atomic shared memory publishing", () => {
     expect(remoteHead(fixture)).toBe(symlinkHead);
   });
 
+  test("replaces an oversized existing page with compliant content", async () => {
+    const fixture = makeFixture();
+    const writer = advanceFromClone(
+      fixture,
+      "oversized-writer",
+      "concepts/oversized.md",
+      `# Oversized\n\n${"x".repeat(70_000)}\n`,
+    );
+    const replacement = "# Recovered page\n\nUse the bounded procedure.\n";
+
+    const result = await publish(
+      fixture,
+      proposal(writer.sha, [{ path: "concepts/oversized.md", content: replacement }]),
+    );
+
+    expect(result.reply.isError).toBe(false);
+    expect(remoteFile(fixture, "concepts/oversized.md")).toBe(replacement);
+  });
+
   test("fails closed for dirty state, origin mismatches, and an active lock", async () => {
     const dirty = makeFixture();
     writeFile(join(dirty.checkout, "local-note.txt"), "local work\n");
