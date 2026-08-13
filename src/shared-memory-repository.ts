@@ -123,9 +123,13 @@ export function createEffectivePolicy(sharingGuidance: string | null): Effective
   };
 }
 
+export function decodeUtf8(buffer: Buffer): string {
+  return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+}
+
 function decodeText(buffer: Buffer, label: string): string {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    return decodeUtf8(buffer);
   } catch {
     throw new SharedMemoryRepositoryError("REPOSITORY_ERROR", `${label} is not valid UTF-8 text.`);
   }

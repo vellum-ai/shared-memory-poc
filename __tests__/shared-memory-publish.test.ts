@@ -98,7 +98,6 @@ function cloneInstall(
 
 function makeFixture(
   options: {
-    attributes?: string;
     branch?: string;
     objectFormat?: "sha1" | "sha256";
     sharingGuidance?: string;
@@ -115,9 +114,6 @@ function makeFixture(
   }
   writeFile(join(seed, "concepts", "deploy-runbook.md"), DEPLOY_CONTENT);
   writeFile(join(seed, "README.md"), "# Shared content\n");
-  if (options.attributes !== undefined) {
-    writeFile(join(seed, ".gitattributes"), options.attributes);
-  }
   const expectedHead = commit(seed, "seed shared concepts");
 
   const remote = join(root, "remote.git");
@@ -205,6 +201,14 @@ function writePostIndexChangeHook(checkout: string, script: string): void {
   const hook = join(checkout, ".git", "hooks", "post-index-change");
   writeFile(hook, `#!/usr/bin/env bash\nset -euo pipefail\n${script}\n`);
   chmodSync(hook, 0o755);
+}
+
+function configureCleanFilter(fixture: Fixture, name: string, script: string): void {
+  const filter = join(fixture.root, `${name}-filter.sh`);
+  writeFile(filter, `#!/usr/bin/env bash\nset -euo pipefail\n${script}\n`);
+  chmodSync(filter, 0o755);
+  runGit(fixture.checkout, ["config", `filter.${name}.clean`, filter]);
+  runGit(fixture.checkout, ["config", `filter.${name}.required`, "true"]);
 }
 
 async function waitForFile(path: string): Promise<void> {
@@ -329,13 +333,19 @@ describe("atomic shared memory publishing", () => {
   });
 
   test("applies repository text normalization to published Markdown", async () => {
-    const fixture = makeFixture({ attributes: "*.md text eol=lf\n" });
+    const fixture = makeFixture();
+    const attributes = advanceFromClone(
+      fixture,
+      "attribute-writer",
+      ".gitattributes",
+      "*.md text eol=lf\n",
+    );
     const normalized = `${DEPLOY_CONTENT}\nNormalized update.\n`;
     const crlf = normalized.replaceAll("\n", "\r\n");
 
     const result = await publish(
       fixture,
-      proposal(fixture.expectedHead, [
+      proposal(attributes.sha, [
         { path: "concepts/deploy-runbook.md", content: crlf },
       ]),
     );
@@ -343,6 +353,42 @@ describe("atomic shared memory publishing", () => {
     expect(result.reply.isError).toBe(false);
     expect(remoteFile(fixture, "concepts/deploy-runbook.md")).toBe(normalized);
     expect(runGit(fixture.checkout, ["status", "--porcelain"])).toBe("");
+  });
+
+  test("rejects invalid Markdown produced by repository clean filters", async () => {
+    const cases = [
+      {
+        name: "oversized",
+        script: "head -c 70000 /dev/zero | tr '\\000' x",
+      },
+      { name: "invalid-utf8", script: "printf '\\377'" },
+      { name: "nul", script: "printf 'valid\\000invalid\\n'" },
+    ];
+
+    for (const testCase of cases) {
+      const fixture = makeFixture();
+      const attributes = advanceFromClone(
+        fixture,
+        `${testCase.name}-attribute-writer`,
+        ".gitattributes",
+        `*.md filter=${testCase.name}\n`,
+      );
+      configureCleanFilter(fixture, testCase.name, testCase.script);
+
+      const result = await publish(
+        fixture,
+        proposal(attributes.sha, [
+          {
+            path: "concepts/deploy-runbook.md",
+            content: `${DEPLOY_CONTENT}\nFiltered update.\n`,
+          },
+        ]),
+      );
+
+      expect(result.reply.isError).toBe(true);
+      expect(errorCode(result.body)).toBe("CONTENT_LIMIT");
+      expect(remoteHead(fixture)).toBe(attributes.sha);
+    }
   });
 
   test("returns a no-op without creating a commit when content already matches", async () => {
