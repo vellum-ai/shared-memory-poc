@@ -90,17 +90,22 @@ sync aborts an in-progress rebase before it pulls.
 
 If the pull still fails, or the `branch` in `config.json` no longer matches the
 branch the clone was made from, sync repairs the clone by deleting `data/repo`
-and cloning again. It only does that when the clone holds nothing that would be
-lost, which means no unpushed commits and no uncommitted changes.
+and cloning again. It only does that when the clone holds no local work. Local
+work is any of three things:
 
-If the clone does hold either, sync keeps it, reports that the state needs
+- a commit on any local branch that is not on the remote, including one parked
+  on a side branch that is not checked out;
+- a stash entry;
+- an uncommitted change, staged or not.
+
+If the clone holds any of them, sync keeps it, reports that the state needs
 manual resolution, and tries again on the next tick. The local work stays on
 disk for someone to land or drop, and the assistant keeps running on the content
 it already has.
 
 A clone whose HEAD resolves to no commit never finished cloning and so cannot
-hold outbound work, and sync deletes and re-clones that one too as long as it has
-no uncommitted changes.
+hold outbound work, and sync deletes and re-clones that one too as long as its
+tree is clean.
 
 ### Failure semantics
 
@@ -122,23 +127,55 @@ the same delta.
 Concept-page memory has to be active on the assistant first. Both
 `assistant memory ingest` and `assistant memory v2 reembed-skills` refuse to run
 without it, and those are the two calls sync makes, so neither half of a sync
-would do anything. It is on by default on current assistants. Check it:
+would do anything. It is on by default. Check it:
 
 ```bash
-assistant config get memory.v3.live
+assistant config get memory.enabled
 assistant config get memory.v2.enabled
+assistant config get memory.v3.live
 ```
 
-At least one has to be on.
+`(not set)` counts as on. `memory.v2.enabled` defaults to true, and the gate
+reads the defaulted config, so a stock assistant prints `(not set)` for all
+three keys and still has concept-page memory active. Two settings turn it off.
+`memory.enabled` set to `false` is the master Memory opt-out and stops ingest
+and the reseed whatever the tier keys say. `memory.v2.enabled` set to `false`
+turns it off too, unless `memory.v3.live` is `true`.
 
 Then, for the proof of concept:
 
-1. Clone or copy this repo into `$VELLUM_WORKSPACE_DIR/plugins/shared-memory/`.
-2. `cp config.example.json config.json` and set `repoUrl` to your content repo,
+1. Enable the `plugin-schedules` feature flag on the assistant. This talks to
+   the running daemon, so do it before the next step.
+2. Stop the daemon: `vellum sleep --wait 60s`.
+3. Clone or copy this repo into `$VELLUM_WORKSPACE_DIR/plugins/shared-memory/`.
+4. `cp config.example.json config.json` and set `repoUrl` to your content repo,
    and `branch` if it is not `main`.
-3. Enable the `plugin-schedules` feature flag on the assistant.
-4. Restart the daemon.
+5. Start the daemon: `vellum wake`.
+
+The daemon is down for the clone on purpose. A running assistant commits its
+workspace by itself, on a heartbeat and again on shutdown, and the exclude line
+that keeps the plugin out of that history is written by the plugin's init hook,
+which does not run until the next boot. Clone into a live workspace and the
+commit can land first, recording `plugins/shared-memory` as a nested-repo entry.
+
+An install done in the other order heals itself. On the next boot the init hook
+writes the exclude line and then untracks the path with `git rm --cached`, so
+the workspace stops recording changes under it. The commits already made keep
+their entry, which is harmless.
 
 [`docs/QA.md`](docs/QA.md) is the step-by-step runbook: it builds a throwaway
 content repo, installs the plugin against it, and verifies the whole path end to
 end. It also lists this version's known limitations.
+
+## Working on the plugin
+
+The repo commits `bun.lock`, and `.gitignore` covers `node_modules/`, so the
+development loop leaves the checkout clean:
+
+```bash
+bun install
+bunx tsc --noEmit
+```
+
+A `git status` that is dirty after those two commands means a dependency
+changed, not that the loop is untidy.

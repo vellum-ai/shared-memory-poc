@@ -31,14 +31,20 @@ that runs the sync script by hand.
 `config.json` and `git` to pull the content repo.
 
 **Concept-page memory active.** Ingest and the skill reseed both need it. It is
-on by default on current assistants.
+on by default.
 
 ```bash
-assistant config get memory.v3.live
+assistant config get memory.enabled
 assistant config get memory.v2.enabled
+assistant config get memory.v3.live
 ```
 
-At least one has to be on. If neither is, steps 7 and 9 fail.
+`(not set)` counts as on. `memory.v2.enabled` defaults to true and the gate
+reads the defaulted config, so a stock assistant prints `(not set)` for all
+three keys and is fine. Two settings fail this check. `memory.enabled` set to
+`false` is the master Memory opt-out and stops ingest and the reseed whatever
+the tier keys say. `memory.v2.enabled` set to `false` fails too, unless
+`memory.v3.live` is `true`. In either case steps 7 and 9 fail.
 
 ## Step 1 — Find the workspace
 
@@ -104,7 +110,25 @@ git -C "$FIXTURE" -c user.email=qa@example.com -c user.name=QA \
 git -C "$FIXTURE" log --oneline
 ```
 
-## Step 3 — Install the plugin
+## Step 3 — Stop the daemon
+
+Install with the daemon down.
+
+```bash
+vellum sleep --wait 60s
+```
+
+`--wait` lets in-flight background work drain first, so you do not stop the
+daemon mid-job. Without a duration it waits as long as it takes.
+
+A running assistant commits its own workspace, on a heartbeat and again on
+shutdown, and the exclude line that keeps the plugin out of that history is not
+written until the init hook runs at the next boot. Clone into a live workspace
+and the commit can land first, recording `plugins/shared-memory` as a
+nested-repo entry. Stopping first closes that window, and step 12 checks that it
+stayed closed.
+
+## Step 4 — Install the plugin and start the daemon
 
 Clone this repo into the workspace's plugins directory. The directory name is
 what the assistant uses as the plugin name, so it has to be `shared-memory`.
@@ -132,19 +156,13 @@ Expect:
 }
 ```
 
-## Step 4 — Restart the daemon
-
-The init hook runs once per boot, and the schedule reconciler picks up new
-plugins on startup. Both need a restart.
+Now start the daemon. The init hook runs once per boot, and the schedule
+reconciler picks up new plugins on startup, so both land on this boot.
 
 ```bash
-vellum sleep --wait 60s
 vellum wake
 vellum ps
 ```
-
-`--wait` lets in-flight background work drain first, so you do not stop the
-daemon mid-job. Without a duration it waits as long as it takes.
 
 ## Step 5 — Verify the plugin loaded
 
@@ -184,7 +202,11 @@ Two effects, both idempotent.
 grep -c '^/plugins/shared-memory/$' "$WS/.git/info/exclude"
 ```
 
-Expect `1`. Run step 4 again and re-check; it should still be `1`.
+Expect `1`. Restart the daemon and re-check; it should still be `1`.
+
+```bash
+vellum sleep --wait 60s && vellum wake
+```
 
 The line covers the whole plugin directory, not just `data/`. You installed by
 cloning, so `plugins/shared-memory` carries its own `.git` and the workspace
@@ -242,8 +264,10 @@ Skill re-seed complete.
 shared-memory: synced 4f9c1ab… (skills reembedded, pages ingested)
 ```
 
-The last line is the script's own summary, and it is the one to check. Above it
-sits whatever the two assistant calls printed, the reseed line included.
+The last line is the script's own summary, and it is the one to check.
+`Skill re-seed complete.` above it comes from the reseed call. Ingest prints
+nothing here, even though it ran: the script calls it with `--json` and captures
+its stdout to read the summary, so only the reseed's line reaches the run.
 
 The scheduler stores stdout in `output` and stderr in `error`, so a run that
 succeeded can still have text in `error`. Git writes its clone banner to stderr,
@@ -252,6 +276,11 @@ which is where the first sync's `Cloning into '…'` shows up:
 ```bash
 assistant schedules runs "$SCHED" --limit 1 --json | jq -r '.runs[0].error'
 ```
+
+The run row keeps the first 10,000 bytes of `output` and the first 2,000 bytes
+of `error`, and drops the rest. A first sync over a large content repo can lose
+the tail that way, summary line included. Run the script by hand, as below, if
+you need to see it.
 
 ### If the flag is off
 
@@ -416,9 +445,10 @@ shared-memory: already synced at 7d4e8fa…
 ```
 
 The script stops at the watermark check, before it calls the assistant at all.
-So there should be no `Skill re-seed complete.` line and nothing from the ingest
-step. Those are the only two assistant calls the script makes, so their absence
-is the proof it did no work.
+So there should be no `Skill re-seed complete.` line. That line is the only
+assistant output a run ever shows, so its absence is the proof the reseed did
+not run. For ingest, the pages half is covered by the summary above: a run that
+had called it would end in `pages ingested`.
 
 The watermark is what makes this happen. It should match the fixture's HEAD:
 
@@ -437,18 +467,39 @@ git -C "$WS" status --short | grep 'plugins/shared-memory' || echo "no plugin no
 ```
 
 Expect `no plugin noise`. That is the exclude line from step 6 doing its job.
-It covers the whole plugin directory, so the nested clone you made in step 3
+It covers the whole plugin directory, so the nested clone you made in step 4
 never reaches the workspace's index as a gitlink.
 
+The path must also be untracked right now:
+
+```bash
+git -C "$WS" ls-files -- plugins/shared-memory
+```
+
+Expect no output. Then look at the history:
+
+```bash
+git -C "$WS" log --oneline -- plugins/shared-memory
+```
+
+Expect no output on a fresh install done in this runbook's order. Commits here
+mean the path was recorded before the init hook first ran, which is what step 3
+avoids. Those commits are harmless and stay as they are; the hook untracks the
+path on the boot after it finds it tracked. What matters is that the `ls-files`
+check above is empty now. If it is not, the hook has not run since the path was
+committed, so restart the daemon and re-check.
+
 The plugin's own checkout should be clean too. Its `.gitignore` covers `data/`,
-the `skills` symlink, and `config.json`:
+the `skills` symlink, `config.json` and `node_modules/`:
 
 ```bash
 git -C "$WS/plugins/shared-memory" status --short
 ```
 
-Expect no output at all. The config you wrote in step 3 is local to this install
+Expect no output at all. The config you wrote in step 4 is local to this install
 and ignored, and nothing from `data/` or the `skills` link should appear either.
+Installing dev dependencies does not change this: `bun.lock` is committed and
+`node_modules/` is ignored.
 
 ## Troubleshooting
 
@@ -482,11 +533,23 @@ Finally, confirm the plugin itself loaded at all with `assistant plugins list`.
 
 ### The sync exits nonzero
 
-Read the stored stderr:
+Which stream carries the reason depends on what failed. Git, `jq` and PATH
+problems land in stderr:
 
 ```bash
 assistant schedules runs "$SCHED" --limit 1 --json | jq -r '.runs[0].error'
 ```
+
+An ingest failure lands in stdout instead. The script calls ingest with
+`--json`, the CLI prints its failure summary to stdout, and the script echoes
+the reason in a line of its own:
+
+```bash
+assistant schedules runs "$SCHED" --limit 1 --json | jq -r '.runs[0].output'
+```
+
+Look for `shared-memory: ingest did not complete (<reason>), watermark
+unchanged`.
 
 **Git auth.** A schedule run inherits `HOME`, `PATH` and `SSH_AUTH_SOCK` from the
 daemon's environment, so a key already loaded in your agent works. A key that
@@ -495,12 +558,11 @@ an unlocked agent or a key without a passphrase. Run
 `git ls-remote <repoUrl>` by hand to separate an auth problem from a plugin
 problem.
 
-**Consolidation lock.** Ingest holds the memory consolidation lock while it
-writes, so a concurrent consolidation pass makes it fail with
+**Consolidation lock.** The reason in stdout reads
 `Memory ingest rejected: consolidation lock held by <holder>. Retry after the
-current writer finishes.` This is expected contention, not a bug. Nothing is
-imported and the watermark stays put, so the next tick reprocesses the same
-delta. Wait and re-run.
+current writer finishes.` Ingest holds that lock while it writes, so a
+concurrent consolidation pass locks it out. This is expected contention, not a
+bug. Wait and re-run.
 
 **`jq: command not found`.** Install `jq`.
 
@@ -512,19 +574,24 @@ For what advances the watermark and what does not, see
 
 ### The sync keeps reporting the same clone problem
 
-A failed pull normally heals itself. Sync deletes `data/repo` and clones again,
-but only when the clone holds no unpushed commits and no uncommitted changes. If
-it holds either, sync keeps the clone and reports that the state needs manual
-resolution, then tries again on the next tick.
+A failed pull heals itself unless the clone holds local work. For what counts as
+local work, see
+[Recovering a wedged clone](../README.md#recovering-a-wedged-clone) in the
+README.
 
-Look at what is in the way:
+Find what is in the way. One command per kind:
 
 ```bash
-git -C "$WS/plugins/shared-memory/data/repo" status
-git -C "$WS/plugins/shared-memory/data/repo" log --oneline @{u}..
+REPO="$WS/plugins/shared-memory/data/repo"
+git -C "$REPO" status
+git -C "$REPO" log --oneline --branches --not --remotes
+git -C "$REPO" stash list
 ```
 
-Land or drop the local work. The next tick recovers on its own.
+The `log` line lists unpushed commits on every local branch, not just the
+checked-out one, so a commit parked on a side branch shows up here.
+
+Land or drop what you find. The next tick recovers on its own.
 
 ### The skill is not there, or is not recalled
 
@@ -576,18 +643,32 @@ concept-page memory active. See the prerequisites.
 
 ### A page never reaches disk at all
 
-Ingest rejected it. A page that fails validation is reported as a warning with
-its slug named, while the rest of the batch imports. Read the run to find the
-slug and the reason:
+Ingest rejected it. The run names the rejected slugs:
 
 ```bash
 assistant schedules runs "$SCHED" --limit 1 --json | jq -r '.runs[0].output'
-assistant schedules runs "$SCHED" --limit 1 --json | jq -r '.runs[0].error'
 ```
 
-The sync still counts as done, and the watermark still advances. So fix the page
-in the content repo and commit. The next sync picks the fix up like any other
-change.
+Look for `shared-memory: warning: rejected pages were skipped: <slugs>`.
+
+The run does not carry the per-page reason, because the script reads the ingest
+JSON and prints only the slugs. To see the reason, stage the clone's pages the
+way the script does and dry-run ingest over them:
+
+```bash
+STAGE=$(mktemp -d)
+mkdir -p "$STAGE/shared"
+cp -R "$WS/plugins/shared-memory/data/repo/concepts/." "$STAGE/shared/"
+assistant memory ingest --dir "$STAGE" --dry-run --json \
+  | jq '.results[] | select(.action == "invalid")'
+```
+
+A dry run validates without writing anything, so it is safe to repeat while you
+fix the page.
+
+Fix the page in the content repo and commit. The next sync picks the fix up like
+any other change; a rejected page does not hold the watermark back. See
+[Failure semantics](../README.md#failure-semantics) in the README.
 
 ### The sync says "unconfigured, skipping"
 
