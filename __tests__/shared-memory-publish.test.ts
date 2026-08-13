@@ -14,6 +14,11 @@ import { dirname, join } from "node:path";
 
 import type { ToolContext } from "@vellumai/plugin-api";
 
+import {
+  createPolicyFingerprint,
+  HARD_NON_PERSONAL_BASELINE,
+  SHARING_GUIDANCE_RULE,
+} from "../src/shared-memory-repository.js";
 import publishTool, { executeSharedMemoryPublish } from "../tools/shared-memory-publish.js";
 import { commit, identify, initRepo, runGit } from "./git-fixture.js";
 
@@ -140,12 +145,22 @@ async function publish(
 function proposal(
   expectedHead: string,
   upserts: Array<{ path: string; content: string }>,
+  expectedPolicyFingerprint = policyFingerprint(),
 ): Record<string, unknown> {
   return {
     expectedHead,
+    expectedPolicyFingerprint,
     commitMessage: "Document shared release knowledge",
     upserts,
   };
+}
+
+function policyFingerprint(sharingGuidance: string | null = null): string {
+  return createPolicyFingerprint({
+    hardBaseline: HARD_NON_PERSONAL_BASELINE,
+    sharingGuidance,
+    guidanceRule: SHARING_GUIDANCE_RULE,
+  });
 }
 
 function remoteHead(fixture: Fixture): string {
@@ -207,6 +222,7 @@ describe("shared_memory_publish tool contract", () => {
     expect(String(publishTool.defaultRiskLevel)).toBe("medium");
     expect(publishTool.exclusive).toBe(true);
     expect(publishTool.description).toContain("shared_memory_inspect");
+    expect(publishTool.description).toContain("policyFingerprint");
     expect(publishTool.description).toContain("medical");
     expect(publishTool.description).toContain("relationship");
     expect(publishTool.description).toContain("identifiable person");
@@ -234,6 +250,7 @@ describe("atomic shared memory publishing", () => {
       expect.objectContaining({
         branch: "knowledge",
         previousHead: fixture.expectedHead,
+        policyFingerprint: policyFingerprint(),
         changedPaths: [
           "concepts/architecture/event-routing.md",
           "concepts/deploy-runbook.md",
@@ -286,6 +303,38 @@ describe("atomic shared memory publishing", () => {
     expect(result.body.commitSha).toBeUndefined();
   });
 
+  test("rejects a proposal when sharing guidance changed after inspection", async () => {
+    const originalGuidance = "Share release runbooks only.";
+    const fixture = makeFixture({ sharingGuidance: originalGuidance });
+    writeConfig(
+      fixture.pluginDir,
+      fixture.repoUrl,
+      fixture.branch,
+      "Share architecture decisions only.",
+    );
+
+    const result = await publish(
+      fixture,
+      proposal(
+        fixture.expectedHead,
+        [
+          {
+            path: "concepts/deploy-runbook.md",
+            content: `${DEPLOY_CONTENT}\nPolicy-stale update.\n`,
+          },
+        ],
+        policyFingerprint(originalGuidance),
+      ),
+    );
+
+    expect(result.reply.isError).toBe(true);
+    expect(errorCode(result.body)).toBe("STALE_POLICY");
+    expect(JSON.stringify(result.body.effectivePolicy)).toContain(
+      "Share architecture decisions only.",
+    );
+    expect(remoteHead(fixture)).toBe(fixture.expectedHead);
+  });
+
   test("prevents two assistants inspected at the same head from overwriting each other", async () => {
     const fixture = makeFixture({ sharingGuidance: "Share release runbooks only." });
     const second = cloneInstall(fixture, "shared-memory-second", "Share release runbooks only.");
@@ -296,13 +345,13 @@ describe("atomic shared memory publishing", () => {
       fixture,
       proposal(fixture.expectedHead, [
         { path: "concepts/deploy-runbook.md", content: firstContent },
-      ]),
+      ], policyFingerprint("Share release runbooks only.")),
     );
     const secondResult = await publish(
       second,
       proposal(fixture.expectedHead, [
         { path: "concepts/deploy-runbook.md", content: secondContent },
-      ]),
+      ], policyFingerprint("Share release runbooks only.")),
     );
 
     expect(first.reply.isError).toBe(false);

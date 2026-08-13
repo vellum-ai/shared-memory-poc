@@ -81,6 +81,7 @@ export async function inspectSharedMemory(
         branch: revision.branch,
         expectedHead: revision.expectedHead,
         effectivePolicy: revision.effectivePolicy,
+        policyFingerprint: revision.policyFingerprint,
         untrustedContent: true,
       };
       if ("query" in input) {

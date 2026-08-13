@@ -30,6 +30,7 @@ export interface SharedMemoryUpsert {
 
 export interface SharedMemoryPublishProposal {
   expectedHead: string;
+  expectedPolicyFingerprint: string;
   commitMessage: string;
   upserts: SharedMemoryUpsert[];
 }
@@ -38,6 +39,7 @@ export interface SharedMemoryPublishResult {
   branch: string;
   previousHead: string;
   effectivePolicy: EffectivePolicy;
+  policyFingerprint: string;
   changedPaths: string[];
   noop: boolean;
   commitSha?: string;
@@ -95,16 +97,32 @@ function exactKeys(value: Record<string, unknown>, expected: string[]): boolean 
 }
 
 export function parsePublishProposal(input: Record<string, unknown>): SharedMemoryPublishProposal {
-  if (!exactKeys(input, ["commitMessage", "expectedHead", "upserts"])) {
+  if (
+    !exactKeys(input, [
+      "commitMessage",
+      "expectedHead",
+      "expectedPolicyFingerprint",
+      "upserts",
+    ])
+  ) {
     throw new SharedMemoryPublishError(
       "INVALID_INPUT",
-      "Provide only expectedHead, commitMessage, and upserts.",
+      "Provide only expectedHead, expectedPolicyFingerprint, commitMessage, and upserts.",
     );
   }
   if (typeof input.expectedHead !== "string" || !/^[0-9a-f]{40}$/.test(input.expectedHead)) {
     throw new SharedMemoryPublishError(
       "INVALID_INPUT",
       "expectedHead must be the 40-character commit from shared_memory_inspect.",
+    );
+  }
+  if (
+    typeof input.expectedPolicyFingerprint !== "string" ||
+    !/^[0-9a-f]{64}$/.test(input.expectedPolicyFingerprint)
+  ) {
+    throw new SharedMemoryPublishError(
+      "INVALID_INPUT",
+      "expectedPolicyFingerprint must be the fingerprint from shared_memory_inspect.",
     );
   }
   if (typeof input.commitMessage !== "string") {
@@ -165,6 +183,7 @@ export function parsePublishProposal(input: Record<string, unknown>): SharedMemo
 
   return {
     expectedHead: input.expectedHead,
+    expectedPolicyFingerprint: input.expectedPolicyFingerprint,
     commitMessage,
     upserts: upserts.sort((left, right) => left.path.localeCompare(right.path)),
   };
@@ -299,6 +318,19 @@ function requireExpectedHead(
       "STALE_HEAD",
       "Shared memory changed after inspection. Inspect the new head and reconsolidate before publishing.",
       { effectivePolicy, observedHead },
+    );
+  }
+}
+
+function requireExpectedPolicy(
+  expectedPolicyFingerprint: string,
+  revision: RepositoryRevision,
+): void {
+  if (revision.policyFingerprint !== expectedPolicyFingerprint) {
+    throw new SharedMemoryPublishError(
+      "STALE_POLICY",
+      "Shared-memory sharing guidance changed after inspection. Inspect again before publishing.",
+      { effectivePolicy: revision.effectivePolicy },
     );
   }
 }
@@ -471,6 +503,7 @@ async function publishAtRevision(
   pluginDir: string,
   signal?: AbortSignal,
 ): Promise<SharedMemoryPublishResult> {
+  requireExpectedPolicy(proposal.expectedPolicyFingerprint, revision);
   requireExpectedHead(proposal.expectedHead, revision.expectedHead, revision.effectivePolicy);
   await assertRepositoryReady(revision, signal);
   const changed = await changedUpserts(revision, proposal.upserts, signal);
@@ -481,6 +514,7 @@ async function publishAtRevision(
       branch: revision.branch,
       previousHead: proposal.expectedHead,
       effectivePolicy: revision.effectivePolicy,
+      policyFingerprint: revision.policyFingerprint,
       changedPaths: [],
       noop: true,
     };
@@ -539,6 +573,7 @@ async function publishAtRevision(
     branch: revision.branch,
     previousHead: proposal.expectedHead,
     effectivePolicy: revision.effectivePolicy,
+    policyFingerprint: revision.policyFingerprint,
     changedPaths: changed.map(({ path }) => path),
     noop: false,
     commitSha,

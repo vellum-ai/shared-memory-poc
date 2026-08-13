@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +44,7 @@ export interface RepositoryRevision {
   branch: string;
   expectedHead: string;
   effectivePolicy: EffectivePolicy;
+  policyFingerprint: string;
 }
 
 export interface ConceptFile {
@@ -98,6 +100,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function byteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
+}
+
+export function createPolicyFingerprint(policy: EffectivePolicy): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        hardBaseline: policy.hardBaseline,
+        sharingGuidance: policy.sharingGuidance,
+        guidanceRule: policy.guidanceRule,
+      }),
+      "utf8",
+    )
+    .digest("hex");
 }
 
 function decodeText(buffer: Buffer, label: string): string {
@@ -333,16 +348,18 @@ async function resolveRevision(
     "The fetched Git revision",
   ).trim();
 
+  const effectivePolicy = {
+    hardBaseline: HARD_NON_PERSONAL_BASELINE,
+    sharingGuidance: config.sharingGuidance,
+    guidanceRule: SHARING_GUIDANCE_RULE,
+  };
   return {
     repoDir,
     repoUrl: config.repoUrl,
     branch: config.branch,
     expectedHead,
-    effectivePolicy: {
-      hardBaseline: HARD_NON_PERSONAL_BASELINE,
-      sharingGuidance: config.sharingGuidance,
-      guidanceRule: SHARING_GUIDANCE_RULE,
-    },
+    effectivePolicy,
+    policyFingerprint: createPolicyFingerprint(effectivePolicy),
   };
 }
 
