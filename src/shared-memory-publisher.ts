@@ -57,11 +57,9 @@ interface ChangedUpsert extends SharedMemoryUpsert {
   mode: "100644" | "100755";
 }
 
-const COMMIT_IDENTITY = {
-  GIT_AUTHOR_NAME: "Shared Memory Assistant",
-  GIT_AUTHOR_EMAIL: "shared-memory@example.com",
-  GIT_COMMITTER_NAME: "Shared Memory Assistant",
-  GIT_COMMITTER_EMAIL: "shared-memory@example.com",
+const COMMITTER_IDENTITY = {
+  GIT_COMMITTER_NAME: "Vellum Assistant",
+  GIT_COMMITTER_EMAIL: "assistant@vellum.ai",
 };
 
 export class SharedMemoryPublishError extends Error {
@@ -191,6 +189,42 @@ export function parsePublishProposal(input: Record<string, unknown>): SharedMemo
 
 function outputText(value: Buffer): string {
   return value.toString("utf8").trim();
+}
+
+async function resolveCommitIdentity(
+  repoDir: string,
+  signal?: AbortSignal,
+): Promise<Record<string, string>> {
+  const [nameResult, emailResult] = await Promise.all([
+    runRepositoryGit(repoDir, ["config", "--get", "user.name"], {
+      signal,
+      allowedExitCodes: [0, 1],
+    }),
+    runRepositoryGit(repoDir, ["config", "--get", "user.email"], {
+      signal,
+      allowedExitCodes: [0, 1],
+    }),
+  ]);
+  const name = outputText(nameResult.stdout);
+  const email = outputText(emailResult.stdout);
+  if (
+    nameResult.exitCode !== 0 ||
+    emailResult.exitCode !== 0 ||
+    name.length === 0 ||
+    email.length === 0 ||
+    /[\0-\x1f\x7f]/.test(name) ||
+    /[\0-\x1f\x7f]/.test(email)
+  ) {
+    throw new SharedMemoryPublishError(
+      "GIT_IDENTITY_MISSING",
+      "Configure user.name and user.email for the shared-memory repository before publishing.",
+    );
+  }
+  return {
+    GIT_AUTHOR_NAME: name,
+    GIT_AUTHOR_EMAIL: email,
+    ...COMMITTER_IDENTITY,
+  };
 }
 
 async function assertRepositoryReady(
@@ -345,6 +379,7 @@ async function createCommit(
   const indexPath = join(pluginDir, "data", `publish-index.${randomUUID()}`);
   const indexEnv = { GIT_INDEX_FILE: indexPath };
   try {
+    const commitIdentity = await resolveCommitIdentity(revision.repoDir, signal);
     await runRepositoryGit(revision.repoDir, ["read-tree", proposal.expectedHead], {
       signal,
       env: indexEnv,
@@ -399,7 +434,7 @@ async function createCommit(
           {
             signal,
             stdin: `${proposal.commitMessage}\n`,
-            env: { ...indexEnv, ...COMMIT_IDENTITY },
+            env: { ...indexEnv, ...commitIdentity },
           },
         )
       ).stdout,

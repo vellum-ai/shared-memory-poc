@@ -273,6 +273,16 @@ describe("atomic shared memory publishing", () => {
         `${fixture.expectedHead}..${commitSha}`,
       ]).trim(),
     ).toBe("1");
+    expect(
+      runGit(fixture.root, [
+        "--git-dir",
+        fixture.remote,
+        "show",
+        "-s",
+        "--format=%an%n%ae%n%cn%n%ce",
+        commitSha,
+      ]).trim(),
+    ).toBe("Fixture\nfixture@example.com\nVellum Assistant\nassistant@vellum.ai");
     expect(remoteFile(fixture, "concepts/deploy-runbook.md")).toBe(updatedDeploy);
     expect(remoteFile(fixture, "concepts/architecture/event-routing.md")).toContain(
       "Route invalidations through the gateway.",
@@ -301,6 +311,26 @@ describe("atomic shared memory publishing", () => {
     );
     expect(remoteHead(fixture)).toBe(fixture.expectedHead);
     expect(result.body.commitSha).toBeUndefined();
+  });
+
+  test("rejects publication when the checkout has no configured Git author", async () => {
+    const fixture = makeFixture();
+    runGit(fixture.checkout, ["config", "user.name", ""]);
+    runGit(fixture.checkout, ["config", "user.email", ""]);
+
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        {
+          path: "concepts/deploy-runbook.md",
+          content: `${DEPLOY_CONTENT}\nMissing identity update.\n`,
+        },
+      ]),
+    );
+
+    expect(result.reply.isError).toBe(true);
+    expect(errorCode(result.body)).toBe("GIT_IDENTITY_MISSING");
+    expect(remoteHead(fixture)).toBe(fixture.expectedHead);
   });
 
   test("rejects a proposal when sharing guidance changed after inspection", async () => {
