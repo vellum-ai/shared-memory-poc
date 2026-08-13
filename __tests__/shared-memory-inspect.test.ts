@@ -282,6 +282,22 @@ describe("shared memory inspection", () => {
     expect(effectivePolicy(second.body)).not.toContain("deployment runbooks only");
   });
 
+  test("allows a distinct push-only origin for read-only inspection", async () => {
+    const fixture = makeFixture();
+    runGit(fixture.checkout, [
+      "remote",
+      "set-url",
+      "--push",
+      "origin",
+      `${fixture.repoUrl}-write`,
+    ]);
+
+    const result = await inspect(fixture, { query: "gateway" });
+
+    expect(result.reply.isError).toBe(false);
+    expect(result.body.expectedHead).toBe(fixture.expectedHead);
+  });
+
   test("rejects a checkout whose origin or branch no longer matches config", async () => {
     const fixture = makeFixture();
     runGit(fixture.checkout, ["remote", "set-url", "origin", `${fixture.repoUrl}-other`]);

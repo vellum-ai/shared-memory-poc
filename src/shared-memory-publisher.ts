@@ -178,6 +178,24 @@ async function assertRepositoryReady(
   revision: RepositoryRevision,
   signal?: AbortSignal,
 ): Promise<void> {
+  const pushUrls = outputText(
+    (
+      await runRepositoryGit(
+        revision.repoDir,
+        ["remote", "get-url", "--push", "--all", "origin"],
+        { signal },
+      )
+    ).stdout,
+  )
+    .split(/\r?\n/)
+    .filter(Boolean);
+  if (pushUrls.length !== 1 || pushUrls[0] !== revision.repoUrl) {
+    throw new SharedMemoryPublishError(
+      "REPOSITORY_MISMATCH",
+      "The local shared-memory clone push origin does not match config.json.",
+    );
+  }
+
   const status = await runRepositoryGit(
     revision.repoDir,
     ["status", "--porcelain=v1", "--untracked-files=normal"],
