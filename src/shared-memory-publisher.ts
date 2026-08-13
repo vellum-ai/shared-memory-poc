@@ -9,10 +9,13 @@ import {
   validateConceptPath,
 } from "./concept-path.js";
 import {
+  createEffectivePolicy,
   createOperationSignal,
+  createPolicyFingerprint,
   type EffectivePolicy,
   findConceptTreeEntry,
   MAX_EXACT_CONTENT_BYTES,
+  readRepositoryConfig,
   type RepositoryRevision,
   runRepositoryGit,
   SharedMemoryRepositoryError,
@@ -369,6 +372,21 @@ function requireExpectedPolicy(
   }
 }
 
+async function requireCurrentPolicy(
+  expectedPolicyFingerprint: string,
+  pluginDir: string,
+): Promise<void> {
+  const config = await readRepositoryConfig(pluginDir);
+  const effectivePolicy = createEffectivePolicy(config.sharingGuidance);
+  if (createPolicyFingerprint(effectivePolicy) !== expectedPolicyFingerprint) {
+    throw new SharedMemoryPublishError(
+      "STALE_POLICY",
+      "Shared-memory sharing guidance changed after inspection. Inspect again before publishing.",
+      { effectivePolicy },
+    );
+  }
+}
+
 async function createCommit(
   revision: RepositoryRevision,
   proposal: SharedMemoryPublishProposal,
@@ -545,6 +563,7 @@ async function publishAtRevision(
   const freshHead = await fetchRemoteHead(revision, signal);
   requireExpectedHead(proposal.expectedHead, freshHead, revision.effectivePolicy);
   if (changed.length === 0) {
+    await requireCurrentPolicy(proposal.expectedPolicyFingerprint, pluginDir);
     return {
       branch: revision.branch,
       previousHead: proposal.expectedHead,
@@ -556,6 +575,7 @@ async function publishAtRevision(
   }
 
   const commitSha = await createCommit(revision, proposal, changed, pluginDir, signal);
+  await requireCurrentPolicy(proposal.expectedPolicyFingerprint, pluginDir);
   let pushExitCode: number | undefined;
   let pushUncertain = false;
   try {

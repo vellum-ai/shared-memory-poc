@@ -115,6 +115,14 @@ export function createPolicyFingerprint(policy: EffectivePolicy): string {
     .digest("hex");
 }
 
+export function createEffectivePolicy(sharingGuidance: string | null): EffectivePolicy {
+  return {
+    hardBaseline: HARD_NON_PERSONAL_BASELINE,
+    sharingGuidance,
+    guidanceRule: SHARING_GUIDANCE_RULE,
+  };
+}
+
 function decodeText(buffer: Buffer, label: string): string {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
@@ -348,11 +356,7 @@ async function resolveRevision(
     "The fetched Git revision",
   ).trim();
 
-  const effectivePolicy = {
-    hardBaseline: HARD_NON_PERSONAL_BASELINE,
-    sharingGuidance: config.sharingGuidance,
-    guidanceRule: SHARING_GUIDANCE_RULE,
-  };
+  const effectivePolicy = createEffectivePolicy(config.sharingGuidance);
   return {
     repoDir,
     repoUrl: config.repoUrl,

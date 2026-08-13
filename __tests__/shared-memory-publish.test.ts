@@ -191,6 +191,12 @@ function writePrePushHook(checkout: string, script: string): void {
   chmodSync(hook, 0o755);
 }
 
+function writePostIndexChangeHook(checkout: string, script: string): void {
+  const hook = join(checkout, ".git", "hooks", "post-index-change");
+  writeFile(hook, `#!/usr/bin/env bash\nset -euo pipefail\n${script}\n`);
+  chmodSync(hook, 0o755);
+}
+
 async function waitForFile(path: string): Promise<void> {
   for (let attempt = 0; attempt < 250; attempt += 1) {
     if (existsSync(path)) {
@@ -362,6 +368,38 @@ describe("atomic shared memory publishing", () => {
     expect(JSON.stringify(result.body.effectivePolicy)).toContain(
       "Share architecture decisions only.",
     );
+    expect(remoteHead(fixture)).toBe(fixture.expectedHead);
+  });
+
+  test("revalidates sharing guidance immediately before pushing", async () => {
+    const originalGuidance = "Share release runbooks only.";
+    const updatedGuidance = "Share architecture decisions only.";
+    const fixture = makeFixture({ sharingGuidance: originalGuidance });
+    const replacementDir = join(fixture.root, "replacement-config");
+    const replacementConfig = join(replacementDir, "config.json");
+    writeConfig(replacementDir, fixture.repoUrl, fixture.branch, updatedGuidance);
+    writePostIndexChangeHook(
+      fixture.checkout,
+      `if [[ -f "${replacementConfig}" ]]; then mv "${replacementConfig}" "${join(fixture.pluginDir, "config.json")}"; fi`,
+    );
+
+    const result = await publish(
+      fixture,
+      proposal(
+        fixture.expectedHead,
+        [
+          {
+            path: "concepts/deploy-runbook.md",
+            content: `${DEPLOY_CONTENT}\nPolicy-race update.\n`,
+          },
+        ],
+        policyFingerprint(originalGuidance),
+      ),
+    );
+
+    expect(result.reply.isError).toBe(true);
+    expect(errorCode(result.body)).toBe("STALE_POLICY");
+    expect(JSON.stringify(result.body.effectivePolicy)).toContain(updatedGuidance);
     expect(remoteHead(fixture)).toBe(fixture.expectedHead);
   });
 
