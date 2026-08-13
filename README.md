@@ -27,7 +27,8 @@ The path becomes the slug, so the path has to be shaped like one. Every segment
 of it, meaning every directory name and the filename with `.md` removed, must
 match `[a-z0-9][a-z0-9-]*`. That is lowercase letters, digits and hyphens, with
 a letter or a digit first. Underscores and uppercase are not allowed. A file
-named `concepts/Team_Oncall.md` is rejected as invalid on every sync, and the
+named `concepts/Team_Oncall.md` is rejected as invalid every time the pages half
+runs, and the
 only sign of it is a warning naming the slug. The other pages import as usual,
 so a file named this way can sit there being skipped indefinitely. Name it
 `concepts/team-oncall.md` instead.
@@ -68,6 +69,8 @@ grows these paths at runtime:
   shared with the outbound (authoring and push) half.
 - `data/last-sha` — the last commit that was fully processed. Sync compares
   against this to decide what changed.
+- `data/sync.lock` — held for the length of a run, so two syncs cannot work on
+  the clone at once.
 - `skills` — a symlink to `data/repo/skills`, created by the init hook. The
   assistant's skill catalog reads the skills in place through this link, so no
   copying is involved.
@@ -92,6 +95,27 @@ must leave the clone checked out on the configured branch.
 Because the pull rebases, unpushed local commits from the outbound half survive a
 sync.
 
+### One sync at a time
+
+Sync takes a lock before it touches git, and releases it when it finishes. The
+lock is the directory `data/sync.lock`.
+
+Two runs can be in flight at once. The schedule fires on its own cadence, and
+`assistant schedules execute` runs a tick inline without checking for one
+already going. A run that finds the lock held prints this and exits 0:
+
+```
+shared-memory: another sync appears to be running, skipping this tick
+```
+
+Exiting 0 is the right answer, not a failure. The run holding the lock is doing
+the work, and whatever it does not reach the next tick picks up.
+
+A run killed by the schedule timeout is killed outright, so it never releases
+its lock. A lock more than 35 minutes old is therefore taken as abandoned: the
+next run deletes it and takes it. A schedule's timeout can be set no higher than
+30 minutes, so no live run can own a lock that old.
+
 ### Recovering a wedged clone
 
 A rebase that an earlier run left half-finished blocks every pull after it, so
@@ -99,18 +123,44 @@ sync aborts an in-progress rebase before it pulls.
 
 A leftover `.git/index.lock` blocks git the same way. Before it attempts any
 recovery, sync deletes that lock if it is more than 30 minutes old. No real git
-operation holds the lock that long, and at most one sync runs at a time, so a
-lock that old belongs to a run that was killed. A lock younger than 30 minutes
-may still belong to something working, so sync leaves it alone and tries again
-on the next tick.
+operation holds the lock that long, and the sync lock keeps a second sync off
+the clone, so a lock that old belongs to a run that was killed.
+
+A lock younger than that may still belong to a git process that is running,
+most likely the outbound half part way through a write. If the pull then fails,
+sync leaves the clone alone and tries again on the next tick. It does not
+attempt the replacement below on that tick, because replacing the clone would
+destroy whatever that process is doing. The run exits nonzero and says so:
+
+```
+shared-memory: <repo path>/.git/index.lock is too new to clear, so a git process may still be writing to the clone; it is left alone and the next tick tries again
+```
 
 If the pull still fails, or the `branch` in `config.json` no longer matches the
-branch the clone is on, sync replaces the clone. It clones fresh into a
-temporary directory first and swaps that clone into place only once it has
+branch the clone is on, sync replaces the clone. It clones fresh into
+`data/repo.new.<pid>` and swaps that clone into place only once it has
 succeeded. If the fresh clone fails, the old clone is left exactly as it was and
-sync tries again on the next tick. There is no partial state at any point:
-`data/repo` is always either the clone you had or a complete new one. A network
-outage cannot leave the install without its skills.
+sync tries again on the next tick. A network outage cannot leave the install
+without its skills.
+
+The swap is two renames inside `data/`. The old clone is renamed to
+`data/repo.old.<pid>`, the new clone is renamed to `data/repo`, and the old one
+is deleted after that. Renames are atomic, so `data/repo` is always either the
+clone you had or a complete new one, never a directory being emptied.
+
+A run killed mid-swap can still leave a `data/repo.new.<pid>` or
+`data/repo.old.<pid>` directory behind, because it never gets to clean up after
+itself. Those are inert copies of a clone. The next run deletes any it finds
+before it starts work, and says so:
+
+```
+shared-memory: removed <path>, left behind by an interrupted run
+```
+
+Two more things a killed run can leave. Between the two renames there is no
+`data/repo` at all, and the next run clones one. A `data/repo` with no `.git` in
+it is what a killed first clone leaves; sync renames that directory away and
+clones fresh, because git will not clone into a directory that has files in it.
 
 Sync replaces a clone only when it can prove the clone holds no local work.
 Local work is any of three things:
