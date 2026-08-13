@@ -21,7 +21,10 @@ Follow these steps exactly.
    in the shared knowledge repo, from the `authors` and `commits` fields. Name
    every author in `authors` and say what they added, updated, or removed,
    with counts and the skill or page names. Use only what the JSON says —
-   never invent, merge, or drop entries. Accuracy over flourish. Then send it:
+   never invent, merge, or drop entries. Accuracy over flourish. Two things
+   stay out of the message: commit shas or ranges (they are plumbing, not
+   news), and any closing commentary about syncing, context, or what the
+   changes might mean. Say who changed what and stop. Then send it:
 
    ```bash
    assistant notifications send \

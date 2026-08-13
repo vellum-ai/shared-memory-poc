@@ -219,7 +219,7 @@ assistant's home feed, shaped like this:
 
 > **Shared knowledge updates**
 >
-> **5 updates** to the shared knowledge repo by 2 authors (a7b06cc..2a770b1).
+> **5 updates** to the shared knowledge repo by 2 authors.
 >
 > - **Alice**: added skill `rollback`; added page `team/oncall`
 > - **Bob**: added skill `oncall-tools`; updated skill `demo`

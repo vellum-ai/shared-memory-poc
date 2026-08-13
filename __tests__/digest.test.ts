@@ -274,6 +274,9 @@ describe("digest schedule", () => {
 
     const body = message(fixture);
     expect(body).toContain("**5 updates** to the shared knowledge repo by 2 authors");
+    // Shas are plumbing: they stay in the run log and out of the notification.
+    expect(body).not.toContain(start.slice(0, 7));
+    expect(body).not.toContain(end.slice(0, 7));
     expect(body).toContain("- **Alice**: added skill `rollback`; added page `team/oncall`; removed page `deploy-runbook`");
     expect(body).toContain("- **Bob**: added skill `oncall-tools`; updated skill `demo`");
 

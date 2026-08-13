@@ -204,8 +204,9 @@ START7="$(printf '%.7s' "$START")"
 END7="$(printf '%.7s' "$END")"
 
 # The notification body, in the markdown the home feed renders: a bold headline
-# count, then one bullet per author.
-MESSAGE="$(awk -v start7="$START7" -v end7="$END7" '
+# count, then one bullet per author. No shas and no commentary: the range is
+# plumbing the reader does not need, and it belongs in the run log only.
+MESSAGE="$(awk '
   BEGIN { FS = "\t" }
   {
     if (!($1 in seen)) { seen[$1] = 1; order[++n] = $1 }
@@ -221,8 +222,8 @@ MESSAGE="$(awk -v start7="$START7" -v end7="$END7" '
     return label " " (count[key] == 1 ? kind : kind "s") " " list[key]
   }
   END {
-    printf "**%d update%s** to the shared knowledge repo by %d author%s (%s..%s).\n\n", \
-      total, (total == 1 ? "" : "s"), n, (n == 1 ? "" : "s"), start7, end7
+    printf "**%d update%s** to the shared knowledge repo by %d author%s.\n\n", \
+      total, (total == 1 ? "" : "s"), n, (n == 1 ? "" : "s")
     for (i = 1; i <= n; i++) {
       a = order[i]
       m = 0

@@ -9,3 +9,7 @@ data/
 
 node_modules/
 *.log
+
+# The app bundle the assistant's monitor process builds from apps/*/src at
+# runtime. Generated on the deployed install, never committed.
+apps/*/dist/
