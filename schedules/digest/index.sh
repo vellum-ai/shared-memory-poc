@@ -246,9 +246,16 @@ MESSAGE="$(awk -v start7="$START7" -v end7="$END7" '
 # The dedupe key covers the exact range, so a run that sent but was killed
 # before the watermark write below cannot notify the user twice: the retry
 # sends the same key and the router drops it.
+#
+# --is-async-background is what lands the notification in the home feed. The
+# feed only mirrors sends that carry that hint, come from a background
+# conversation, or use the assistant_tool channel; a scheduler-channel send
+# from a script is none of those without the flag, and goes out as a
+# client-only push the Vellum app never shows.
 if ! SEND_JSON="$(assistant notifications send \
   --source-channel scheduler \
   --source-event-name schedule.notify \
+  --is-async-background \
   --title "Shared knowledge updates" \
   --message "$MESSAGE" \
   --dedupe-key "$DEDUPE_KEY" \

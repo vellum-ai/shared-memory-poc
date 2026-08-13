@@ -27,10 +27,15 @@ Follow these steps exactly.
    assistant notifications send \
      --source-channel scheduler \
      --source-event-name schedule.notify \
+     --is-async-background \
      --title "Shared knowledge updates" \
      --message "<your summary>" \
      --dedupe-key "<the dedupeKey value from the JSON>"
    ```
+
+   Keep the `--is-async-background` flag: without it the notification goes
+   out as a client-only push and never reaches the home feed the Vellum app
+   shows.
 
 4. Only after the send succeeds, advance the digest watermark, passing the
    `range.end` value from the JSON:

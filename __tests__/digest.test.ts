@@ -268,6 +268,9 @@ describe("digest schedule", () => {
     expect(recorded[0]).toContain("notifications send");
     expect(recorded[0]).toContain("--source-channel scheduler");
     expect(recorded[0]).toContain("--title Shared knowledge updates");
+    // Without this hint the home feed never mirrors the send, so the Vellum
+    // app shows nothing and the notification reaches connected clients only.
+    expect(recorded[0]).toContain("--is-async-background");
 
     const body = message(fixture);
     expect(body).toContain("**5 updates** to the shared knowledge repo by 2 authors");
