@@ -1,0 +1,6 @@
+{
+  "expression": "0 */6 * * *",
+  "description": "Notify about shared knowledge changes since the last digest",
+  "timeout_ms": 60000,
+  "quiet": true
+}

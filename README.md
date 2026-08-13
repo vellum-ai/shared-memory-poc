@@ -69,6 +69,8 @@ grows these paths at runtime:
   shared with the outbound (authoring and push) half.
 - `data/last-sha` — the last commit that was fully processed. Sync compares
   against this to decide what changed.
+- `data/digest-last-sha` — the last commit the digest reported on. The digest
+  compares against this to decide what to announce.
 - `data/sync.lock` — held for the length of a run, so two syncs cannot work on
   the clone at once.
 - `skills` — a symlink to `data/repo/skills`, created by the init hook. The
@@ -208,6 +210,64 @@ Transport-level failures are the case that does hold the watermark back. If the
 daemon is down, or the memory consolidation lock is held by another writer,
 nothing is imported and the watermark stays where it was. The next tick retries
 the same delta.
+
+## Digest
+
+Every six hours the plugin tells the user what changed in the shared knowledge
+store since the last report, and who changed it. A notification lands in the
+assistant's home feed, shaped like this:
+
+> **Shared knowledge updates**
+>
+> **5 updates** to the shared knowledge repo by 2 authors (a7b06cc..2a770b1).
+>
+> - **Alice**: added skill `rollback`; added page `team/oncall`
+> - **Bob**: added skill `oncall-tools`; updated skill `demo`
+
+When nothing changed, nothing is sent. Silence means silence, not a heartbeat.
+
+The digest reports the range between its own watermark at
+`data/digest-last-sha` and sync's at `data/last-sha`. Sync's watermark only
+advances once content has landed in the assistant, so the digest never
+announces a commit whose skills or pages are not yet live. It follows that the
+digest never needs the network, never pulls, and never takes the sync lock: it
+reads history the clone already has. Its first run after install writes the
+current synced commit to its watermark and says nothing, so a fresh install is
+not greeted with the repo's whole history. The same reset happens if the clone
+was replaced and no longer holds the old watermark.
+
+Attribution comes from the commits in the range, skipping merge commits, so a
+change is counted once under the person who made it. A skill counts as added or
+removed only when its `SKILL.md` is; any other change under its directory is an
+update. A rename is reported as an update of the new name. An entity the same
+author both added and removed inside one range nets out to nothing; the same
+sequence split across two authors shows one line for each, which overstates
+what happened but never hides it.
+
+Two schedules back this, and the optional `digest` block in `config.json`
+decides which one speaks:
+
+```json
+{ "digest": { "summary": "deterministic" } }
+```
+
+- `deterministic` (the default, also when the block is absent): the `digest`
+  schedule formats the summary itself, from git data alone. No model involved.
+- `llm`: the `digest-llm` schedule has the assistant write the summary in
+  prose. Same facts, gathered by the same script; the model only does the
+  wording, under instructions to name every author and invent nothing.
+
+Both schedules fire on the same cadence and check the mode first, so exactly
+one of them notifies. The change takes effect on the next tick; nothing
+re-arms. In deterministic mode the `digest-llm` schedule still spends a small
+model turn each tick finding out it has nothing to do. If that bothers you,
+`assistant schedules disable <id>` on the `digest-llm` row turns it off, and
+the override sticks across plugin upgrades.
+
+A digest run that sends but is killed before it can advance the watermark
+retries the same range on the next tick. The notification carries a dedupe key
+made from that range, so the router drops the duplicate and the user is
+notified once.
 
 ## Install
 

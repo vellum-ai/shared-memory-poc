@@ -17,7 +17,7 @@ vellum ps
 ```
 
 **The `plugin-schedules` feature flag on.** It is assistant-scoped and off by
-default. It gates the schedule this plugin declares.
+default. It gates the schedules this plugin declares.
 
 ```bash
 vellum flags set plugin-schedules true
@@ -120,7 +120,7 @@ vellum sleep --wait 60s
 daemon mid-job. Without a duration it waits as long as it takes.
 
 Installing into a live workspace can get the plugin directory recorded in the
-workspace's own git history. Stopping first closes that window, and step 12
+workspace's own git history. Stopping first closes that window, and step 13
 checks that it stayed closed. See
 [Why the daemon goes down first](../README.md#why-the-daemon-goes-down-first) in
 the README.
@@ -274,8 +274,9 @@ nothing here, even though it ran: the script calls it with `--json` and captures
 its stdout to read the summary, so only the reseed's line reaches the run.
 
 The scheduler stores stdout in `output` and stderr in `error`, so a run that
-succeeded can still have text in `error`. Git writes its clone banner to stderr,
-which is where the first sync's `Cloning into '…'` shows up:
+succeeded can still have text in `error`. The script quiets git's routine
+chatter, so on a healthy run `error` is empty; anything that does appear there
+is real signal:
 
 ```bash
 assistant schedules runs "$SCHED" --limit 1 --json | jq -r '.runs[0].error'
@@ -463,7 +464,114 @@ cat "$WS/plugins/shared-memory/data/last-sha"
 git -C "$FIXTURE" rev-parse HEAD
 ```
 
-## Step 12 — Verify workspace hygiene
+## Step 12 — Verify the digest
+
+The digest notifies the user about shared-knowledge changes since its last
+run. It reads the same clone and never touches the network, so everything here
+is fast. See [Digest](../README.md#digest) in the README for what it reports
+and the rules it follows.
+
+Find the schedule the same way as in step 7:
+
+```bash
+DIGEST=$(assistant schedules list --json \
+  | jq -r '.schedules[] | select(.sourceKey=="plugin:shared-memory/digest") | .id')
+```
+
+There is a second row with the sourceKey `plugin:shared-memory/digest-llm` and
+the mode `execute`. Leave it alone for now; it only acts when the llm mode
+below is on.
+
+Run the digest once. The first run records where counting starts and says so:
+
+```bash
+assistant schedules execute "$DIGEST"
+assistant schedules runs "$DIGEST" --limit 1 --json | jq -r '.runs[0].output'
+```
+
+Expect `shared-memory digest: baselined at <sha>, changes after this commit
+will be reported`, and no notification. Run it again immediately:
+
+```
+shared-memory digest: no shared knowledge changes since the last digest
+```
+
+Silence on no changes is the designed behavior, so no notification here either.
+
+Now make a change under a different author, so the attribution shows up:
+
+```bash
+cat > "$FIXTURE/concepts/incident-review.md" <<'EOF'
+---
+source: import:shared-repo
+title: Incident reviews
+---
+
+Reviews happen within three days of the incident.
+EOF
+
+git -C "$FIXTURE" add -A
+git -C "$FIXTURE" -c user.email=taylor@example.com -c user.name=Taylor \
+  commit -qm "Add the incident review page"
+```
+
+Sync first (step 7), because the digest only reports what sync has landed.
+Then execute the digest again and read the run:
+
+```
+shared-memory digest: notified 1 update(s) (<old>..<new>)
+```
+
+And the notification:
+
+```bash
+assistant notifications list --limit 5
+```
+
+Expect a `Shared knowledge updates` item whose body reads
+`**1 update** to the shared knowledge repo by 1 author (…)` with the bullet
+`- **Taylor**: added page \`incident-review\``.
+
+### The llm mode
+
+`config.json` can hand the wording to the model instead:
+
+```bash
+jq '.digest = {"summary": "llm"}' "$WS/plugins/shared-memory/config.json" > /tmp/config.json \
+  && mv /tmp/config.json "$WS/plugins/shared-memory/config.json"
+```
+
+The change is read on the next run; nothing needs a restart. The scripted
+digest now stands down:
+
+```bash
+assistant schedules execute "$DIGEST"
+```
+
+```
+shared-memory digest: llm mode is configured, so the digest-llm schedule handles notifications
+```
+
+Commit another change to the fixture as any author, sync, then run the llm
+row:
+
+```bash
+DIGEST_LLM=$(assistant schedules list --json \
+  | jq -r '.schedules[] | select(.sourceKey=="plugin:shared-memory/digest-llm") | .id')
+
+assistant schedules execute "$DIGEST_LLM"
+```
+
+Expect a `Shared knowledge updates` notification again, this time in prose the
+model wrote. The authors and counts must match the commits exactly; the
+instructions tell it to invent nothing. Put the mode back afterwards:
+
+```bash
+jq '.digest = {"summary": "deterministic"}' "$WS/plugins/shared-memory/config.json" > /tmp/config.json \
+  && mv /tmp/config.json "$WS/plugins/shared-memory/config.json"
+```
+
+## Step 13 — Verify workspace hygiene
 
 The plugin, the clone and the watermark all live in the workspace, but none of
 them may show up as workspace changes.
@@ -743,3 +851,12 @@ These are known and deliberate in this version, not defects to file.
 - **No permissioning.** Everything in the content repo reaches every assistant
   that installs the plugin. There is no way to scope a skill or a page to a
   subset of people.
+- **Digest attribution is per commit, not per net change.** An entity one
+  author added and another author removed inside the same digest range shows a
+  line for each, and a renamed skill is reported as an update of its new name
+  with no mention of the old one. See [Digest](../README.md#digest) in the
+  README for the exact rules.
+- **The idle `digest-llm` row still spends model turns.** In deterministic
+  mode it wakes every six hours, finds it has nothing to do, and stops. Disable
+  the row with `assistant schedules disable <id>` if that matters;
+  the override survives upgrades.
