@@ -18,9 +18,9 @@ import {
   readExactConcepts,
   searchConcepts,
   SHARING_GUIDANCE_RULE,
-  ToolRepositoryError,
+  SharedMemoryRepositoryError,
   withRepositoryRevision,
-} from "../src/tool-repository.js";
+} from "../src/shared-memory-repository.js";
 
 interface InspectQueryInput {
   query: string;
@@ -44,18 +44,21 @@ function parseInput(input: Record<string, unknown>): InspectInput {
   const hasQuery = Object.hasOwn(input, "query");
   const hasPaths = Object.hasOwn(input, "paths");
   if (hasQuery === hasPaths) {
-    throw new ToolRepositoryError(
+    throw new SharedMemoryRepositoryError(
       "INVALID_INPUT",
       "Provide exactly one of query or paths.",
     );
   }
   if (hasQuery) {
     if (typeof input.query !== "string" || input.query.trim().length === 0) {
-      throw new ToolRepositoryError("INVALID_INPUT", "query must be a non-empty string.");
+      throw new SharedMemoryRepositoryError(
+        "INVALID_INPUT",
+        "query must be a non-empty string.",
+      );
     }
     const query = input.query.trim();
     if (query.includes("\0") || Buffer.byteLength(query, "utf8") > MAX_QUERY_BYTES) {
-      throw new ToolRepositoryError(
+      throw new SharedMemoryRepositoryError(
         "INVALID_INPUT",
         `query may be at most ${MAX_QUERY_BYTES} UTF-8 bytes.`,
       );
@@ -92,7 +95,7 @@ export async function inspectSharedMemory(
     if (error instanceof ConceptPathError) {
       return errorResult("PATH_ERROR", error.message);
     }
-    if (error instanceof ToolRepositoryError) {
+    if (error instanceof SharedMemoryRepositoryError) {
       return errorResult(error.code, error.message);
     }
     return errorResult("REPOSITORY_ERROR", "Shared memory inspection failed.");

@@ -103,6 +103,13 @@ if [ -d "$REPO/.git" ]; then
     repo_ok=0
   fi
 
+  # A repoUrl change in config likewise: the clone keeps pulling its old
+  # origin, and only replacement moves it to the new one.
+  ORIGIN_URL="$(git -C "$REPO" remote get-url origin 2>/dev/null || true)"
+  if [ "$ORIGIN_URL" != "$REPO_URL" ]; then
+    repo_ok=0
+  fi
+
   if [ "$repo_ok" = "0" ]; then
     # The clone is shared with the outbound half, so throwing it away is gated
     # on local work being absent. Local work is a commit no remote has, a stash

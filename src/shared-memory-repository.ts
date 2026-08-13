@@ -62,13 +62,13 @@ export interface ConceptTreeEntry {
   size: number;
 }
 
-export class ToolRepositoryError extends Error {
+export class SharedMemoryRepositoryError extends Error {
   constructor(
     readonly code: string,
     message: string,
   ) {
     super(message);
-    this.name = "ToolRepositoryError";
+    this.name = "SharedMemoryRepositoryError";
   }
 }
 
@@ -104,12 +104,12 @@ function decodeText(buffer: Buffer, label: string): string {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
   } catch {
-    throw new ToolRepositoryError("REPOSITORY_ERROR", `${label} is not valid UTF-8 text.`);
+    throw new SharedMemoryRepositoryError("REPOSITORY_ERROR", `${label} is not valid UTF-8 text.`);
   }
 }
 
-function abortError(): ToolRepositoryError {
-  return new ToolRepositoryError("CANCELLED", "The shared memory operation was cancelled.");
+function abortError(): SharedMemoryRepositoryError {
+  return new SharedMemoryRepositoryError("CANCELLED", "The shared memory operation was cancelled.");
 }
 
 function checkCancellation(signal?: AbortSignal): void {
@@ -151,7 +151,7 @@ export async function runRepositoryGit(
     ]);
     checkCancellation(signal);
     if (!options.allowFailure && !allowedExitCodes.includes(exitCode)) {
-      throw new ToolRepositoryError(
+      throw new SharedMemoryRepositoryError(
         "REPOSITORY_ERROR",
         `Git could not complete ${args[0] ?? "the requested operation"}.`,
       );
@@ -164,10 +164,10 @@ export async function runRepositoryGit(
     if (signal?.aborted) {
       throw abortError();
     }
-    if (error instanceof ToolRepositoryError) {
+    if (error instanceof SharedMemoryRepositoryError) {
       throw error;
     }
-    throw new ToolRepositoryError("REPOSITORY_ERROR", "Git could not access shared memory.");
+    throw new SharedMemoryRepositoryError("REPOSITORY_ERROR", "Git could not access shared memory.");
   }
 }
 
@@ -197,16 +197,16 @@ export async function readRepositoryConfig(pluginDir: string): Promise<Repositor
   try {
     raw = JSON.parse(await readFile(join(pluginDir, "config.json"), "utf8"));
   } catch {
-    throw new ToolRepositoryError(
+    throw new SharedMemoryRepositoryError(
       "CONFIG_ERROR",
       "Shared memory is not configured with a readable config.json.",
     );
   }
   if (!isRecord(raw) || typeof raw.repoUrl !== "string" || raw.repoUrl.trim().length === 0) {
-    throw new ToolRepositoryError("CONFIG_ERROR", "Shared memory config requires repoUrl.");
+    throw new SharedMemoryRepositoryError("CONFIG_ERROR", "Shared memory config requires repoUrl.");
   }
   if (byteLength(raw.repoUrl) > 2_048 || raw.repoUrl.includes("\0")) {
-    throw new ToolRepositoryError("CONFIG_ERROR", "Shared memory repoUrl is invalid.");
+    throw new SharedMemoryRepositoryError("CONFIG_ERROR", "Shared memory repoUrl is invalid.");
   }
 
   const branch = raw.branch === undefined ? "main" : raw.branch;
@@ -217,20 +217,20 @@ export async function readRepositoryConfig(pluginDir: string): Promise<Repositor
     branch.startsWith("-") ||
     branch.includes("\0")
   ) {
-    throw new ToolRepositoryError("CONFIG_ERROR", "Shared memory branch is invalid.");
+    throw new SharedMemoryRepositoryError("CONFIG_ERROR", "Shared memory branch is invalid.");
   }
 
   let sharingGuidance: string | null = null;
   if (raw.sharingGuidance !== undefined) {
     if (typeof raw.sharingGuidance !== "string") {
-      throw new ToolRepositoryError("CONFIG_ERROR", "sharingGuidance must be a string.");
+      throw new SharedMemoryRepositoryError("CONFIG_ERROR", "sharingGuidance must be a string.");
     }
     sharingGuidance = raw.sharingGuidance.trim();
     if (
       sharingGuidance.includes("\0") ||
       byteLength(sharingGuidance) > MAX_SHARING_GUIDANCE_BYTES
     ) {
-      throw new ToolRepositoryError(
+      throw new SharedMemoryRepositoryError(
         "CONFIG_ERROR",
         `sharingGuidance may be at most ${MAX_SHARING_GUIDANCE_BYTES} UTF-8 bytes.`,
       );
@@ -252,7 +252,7 @@ async function acquireLock(pluginDir: string): Promise<() => Promise<void>> {
     await mkdir(lockDir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      throw new ToolRepositoryError("REPOSITORY_ERROR", "Could not acquire the shared repository lock.");
+      throw new SharedMemoryRepositoryError("REPOSITORY_ERROR", "Could not acquire the shared repository lock.");
     }
 
     let stale = false;
@@ -267,7 +267,7 @@ async function acquireLock(pluginDir: string): Promise<() => Promise<void>> {
     try {
       await mkdir(lockDir);
     } catch {
-      throw new ToolRepositoryError(
+      throw new SharedMemoryRepositoryError(
         "REPOSITORY_BUSY",
         "Shared memory is busy. Try inspection again shortly.",
       );
@@ -291,7 +291,7 @@ async function resolveRevision(
     { signal, allowedExitCodes: [0, 1, 128] },
   );
   if (branchCheck.exitCode !== 0) {
-    throw new ToolRepositoryError("CONFIG_ERROR", "Shared memory branch is invalid.");
+    throw new SharedMemoryRepositoryError("CONFIG_ERROR", "Shared memory branch is invalid.");
   }
   const origin = decodeText(
     (await runRepositoryGit(repoDir, ["remote", "get-url", "origin"], { signal })).stdout,
@@ -311,7 +311,7 @@ async function resolveRevision(
     .split(/\r?\n/)
     .filter(Boolean);
   if (origin !== config.repoUrl || pushUrls.length !== 1 || pushUrls[0] !== config.repoUrl) {
-    throw new ToolRepositoryError(
+    throw new SharedMemoryRepositoryError(
       "REPOSITORY_MISMATCH",
       "The local shared-memory clone fetch or push origin does not match config.json.",
     );
@@ -326,7 +326,7 @@ async function resolveRevision(
     "The checked-out Git branch",
   ).trim();
   if (branch !== config.branch) {
-    throw new ToolRepositoryError(
+    throw new SharedMemoryRepositoryError(
       "REPOSITORY_MISMATCH",
       "The local shared-memory clone branch does not match config.json.",
     );
@@ -392,15 +392,15 @@ export async function findConceptTreeEntry(
     return null;
   }
   if (!match || match[5] !== validated) {
-    throw new ToolRepositoryError("REPOSITORY_ERROR", `Git could not resolve ${validated}.`);
+    throw new SharedMemoryRepositoryError("REPOSITORY_ERROR", `Git could not resolve ${validated}.`);
   }
   if ((match[1] !== "100644" && match[1] !== "100755") || match[2] !== "blob") {
-    throw new ToolRepositoryError("PATH_ERROR", `${validated} is not a regular Markdown file.`);
+    throw new SharedMemoryRepositoryError("PATH_ERROR", `${validated} is not a regular Markdown file.`);
   }
 
   const size = Number.parseInt(match[4], 10);
   if (!Number.isSafeInteger(size) || size < 0 || size > MAX_CONCEPT_FILE_BYTES) {
-    throw new ToolRepositoryError(
+    throw new SharedMemoryRepositoryError(
       "CONTENT_LIMIT",
       `${validated} exceeds the ${MAX_CONCEPT_FILE_BYTES}-byte inspection limit.`,
     );
@@ -416,7 +416,7 @@ async function readConcept(
   const validated = validateConceptPath(path);
   const entry = await findConceptTreeEntry(revision, validated, signal);
   if (!entry) {
-    throw new ToolRepositoryError("PATH_NOT_FOUND", `No shared concept exists at ${validated}.`);
+    throw new SharedMemoryRepositoryError("PATH_NOT_FOUND", `No shared concept exists at ${validated}.`);
   }
 
   const blob = await runRepositoryGit(
@@ -425,11 +425,11 @@ async function readConcept(
     { signal },
   );
   if (blob.stdout.length !== entry.size) {
-    throw new ToolRepositoryError("REPOSITORY_ERROR", `Git returned an incomplete ${validated}.`);
+    throw new SharedMemoryRepositoryError("REPOSITORY_ERROR", `Git returned an incomplete ${validated}.`);
   }
   const content = decodeText(blob.stdout, validated);
   if (content.includes("\0")) {
-    throw new ToolRepositoryError("PATH_ERROR", `${validated} is not a text Markdown file.`);
+    throw new SharedMemoryRepositoryError("PATH_ERROR", `${validated} is not a text Markdown file.`);
   }
   return content;
 }
@@ -446,7 +446,7 @@ export async function readExactConcepts(
     const content = await readConcept(revision, path, signal);
     totalBytes += byteLength(content);
     if (totalBytes > MAX_EXACT_CONTENT_BYTES) {
-      throw new ToolRepositoryError(
+      throw new SharedMemoryRepositoryError(
         "CONTENT_LIMIT",
         `Exact reads may return at most ${MAX_EXACT_CONTENT_BYTES} bytes in one call.`,
       );

@@ -17,7 +17,7 @@ import {
   DEFAULT_PLUGIN_DIR,
   HARD_NON_PERSONAL_BASELINE,
   SHARING_GUIDANCE_RULE,
-} from "../src/tool-repository.js";
+} from "../src/shared-memory-repository.js";
 
 function errorResult(error: SharedMemoryPublishError): ToolExecutionResult {
   const body: Record<string, unknown> = {

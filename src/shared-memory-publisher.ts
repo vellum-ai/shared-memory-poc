@@ -15,9 +15,9 @@ import {
   MAX_EXACT_CONTENT_BYTES,
   type RepositoryRevision,
   runRepositoryGit,
-  ToolRepositoryError,
+  SharedMemoryRepositoryError,
   withRepositoryRevision,
-} from "./tool-repository.js";
+} from "./shared-memory-repository.js";
 
 export const MAX_COMMIT_MESSAGE_BYTES = 120;
 
@@ -479,7 +479,7 @@ async function publishAtRevision(
     );
     pushExitCode = push.exitCode;
   } catch (error) {
-    if (!(error instanceof ToolRepositoryError)) {
+    if (!(error instanceof SharedMemoryRepositoryError)) {
       throw error;
     }
     pushUncertain = true;
@@ -555,7 +555,7 @@ export async function publishSharedMemory(
         commitSha: error.commitSha,
       });
     }
-    if (error instanceof ToolRepositoryError) {
+    if (error instanceof SharedMemoryRepositoryError) {
       throw new SharedMemoryPublishError(error.code, error.message, { effectivePolicy });
     }
     throw error;
