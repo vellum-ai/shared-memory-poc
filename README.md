@@ -37,11 +37,18 @@ tags: [ops, team]
 `source: import:shared-repo` marks the page as imported content. `title`,
 `summary`, and `tags` are optional.
 
-**Reserved names.** Do not create directories named `skills/` or `cli-commands/`
-directly under `concepts/`. Both are reserved slug prefixes in the assistant's
-memory substrate, and pages underneath them would be rejected or left
-unreachable. Nested uses further down a path are fine; only the top level
-directly under `concepts/` is reserved.
+### Names to avoid
+
+Keep directories named `skills/` and `cli-commands/` out of the top level of
+`concepts/`. Both names are reserved at the top of the assistant's own memory
+slug space.
+
+Shared pages are ingested under `shared/`, so `concepts/skills/foo.md` becomes
+the slug `shared/skills/foo` and imports fine today. The `shared/` prefix is
+what holds such a page clear of the reserved names. Avoiding the two names is a
+portability convention, then, not a rule the substrate enforces on shared pages.
+Following it keeps the layout valid if that nesting ever changes. Uses of either
+name further down a path are fine.
 
 ## Runtime layout
 
@@ -56,26 +63,75 @@ grows these paths at runtime:
   assistant's skill catalog reads the skills in place through this link, so no
   copying is involved.
 
-None of these are committed to the plugin repo.
+None of these are committed to the plugin repo, and neither is the `config.json`
+you write at install time. The plugin's `.gitignore` covers all of them, so a
+deployed clone's own `git status` stays clean.
 
 ## Clone contract
 
 The clone at `data/repo` is shared, so both halves have to respect the same
 rules.
 
-This plugin only ever runs `git pull --rebase --autostash` on the configured
-branch. It never commits and never pushes.
+This plugin pulls with `git pull --rebase --autostash` on the configured branch.
+It never commits and never pushes. The only other way it touches git history is
+the clone repair described below, which discards a clone rather than rewriting
+one.
 
 The outbound half may create local commits in `data/repo` and push them, but it
 must leave the clone checked out on the configured branch.
 
 Because the pull rebases, unpushed local commits from the outbound half survive a
-sync. If any git command fails, sync gives up for that tick and retries on the
-next one. No partial state is written.
+sync.
+
+### Recovering a wedged clone
+
+A rebase that an earlier run left half-finished blocks every pull after it, so
+sync aborts an in-progress rebase before it pulls.
+
+If the pull still fails, or the `branch` in `config.json` no longer matches the
+branch the clone was made from, sync repairs the clone by deleting `data/repo`
+and cloning again. It only does that when the clone holds nothing that would be
+lost, which means no unpushed commits and no uncommitted changes.
+
+If the clone does hold either, sync keeps it, reports that the state needs
+manual resolution, and tries again on the next tick. The local work stays on
+disk for someone to land or drop, and the assistant keeps running on the content
+it already has.
+
+A clone whose HEAD resolves to no commit never finished cloning and so cannot
+hold outbound work, and sync deletes and re-clones that one too as long as it has
+no uncommitted changes.
+
+### Failure semantics
+
+The watermark at `data/last-sha` advances once the halves that ran have
+succeeded.
+
+A page that fails validation does not hold the watermark back. Ingest reports it
+as a warning and names the slug, and the pages that are valid still import. The
+watermark advances, so one malformed page cannot stall every commit behind it.
+Fix the page in the content repo and the next sync picks it up.
+
+Transport-level failures are the case that does hold the watermark back. If the
+daemon is down, or the memory consolidation lock is held by another writer,
+nothing is imported and the watermark stays where it was. The next tick retries
+the same delta.
 
 ## Install
 
-For the proof of concept:
+Concept-page memory has to be active on the assistant first. Both
+`assistant memory ingest` and `assistant memory v2 reembed-skills` refuse to run
+without it, and those are the two calls sync makes, so neither half of a sync
+would do anything. It is on by default on current assistants. Check it:
+
+```bash
+assistant config get memory.v3.live
+assistant config get memory.v2.enabled
+```
+
+At least one has to be on.
+
+Then, for the proof of concept:
 
 1. Clone or copy this repo into `$VELLUM_WORKSPACE_DIR/plugins/shared-memory/`.
 2. `cp config.example.json config.json` and set `repoUrl` to your content repo,

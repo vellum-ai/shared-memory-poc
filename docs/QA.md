@@ -30,7 +30,8 @@ that runs the sync script by hand.
 **`jq` and `git` on your PATH.** The sync script calls `jq` to read
 `config.json` and `git` to pull the content repo.
 
-**Concept-page memory active.** Ingest and the skill reseed both need it.
+**Concept-page memory active.** Ingest and the skill reseed both need it. It is
+on by default on current assistants.
 
 ```bash
 assistant config get memory.v3.live
@@ -177,13 +178,17 @@ skills never load.
 
 Two effects, both idempotent.
 
-**The workspace git exclude carries the data directory, exactly once.**
+**The workspace git exclude carries the plugin directory, exactly once.**
 
 ```bash
-grep -c '^/plugins/shared-memory/data/$' "$WS/.git/info/exclude"
+grep -c '^/plugins/shared-memory/$' "$WS/.git/info/exclude"
 ```
 
 Expect `1`. Run step 4 again and re-check; it should still be `1`.
+
+The line covers the whole plugin directory, not just `data/`. You installed by
+cloning, so `plugins/shared-memory` carries its own `.git` and the workspace
+would otherwise record it as a gitlink.
 
 If the workspace is not a git repo there is no `.git` directory and this file
 does not exist. That is a supported install. The hook reports `no-repo` and
@@ -229,14 +234,23 @@ assistant schedules runs "$SCHED" --limit 1
 assistant schedules runs "$SCHED" --limit 1 --json | jq -r '.runs[0].output'
 ```
 
-The run status should be `ok`, and the stored output should look like this on a
+The run status should be `ok`, and the stored output should end like this on a
 first sync:
 
 ```
-Cloning into '/…/plugins/shared-memory/data/repo'...
 Skill re-seed complete.
-Wrote 1 page(s); skipped 0 existing; 0 invalid.
 shared-memory: synced 4f9c1ab… (skills reembedded, pages ingested)
+```
+
+The last line is the script's own summary, and it is the one to check. Above it
+sits whatever the two assistant calls printed, the reseed line included.
+
+The scheduler stores stdout in `output` and stderr in `error`, so a run that
+succeeded can still have text in `error`. Git writes its clone banner to stderr,
+which is where the first sync's `Cloning into '…'` shows up:
+
+```bash
+assistant schedules runs "$SCHED" --limit 1 --json | jq -r '.runs[0].error'
 ```
 
 ### If the flag is off
@@ -248,7 +262,8 @@ binary on PATH.
 VELLUM_WORKSPACE_DIR="$WS" bash "$WS/plugins/shared-memory/schedules/sync/index.sh"
 ```
 
-The output is the same as above, straight to your terminal. You can also create
+The output is the same as above, straight to your terminal, with the stderr
+lines interleaved rather than split into a second field. You can also create
 an ordinary user schedule that invokes the script, if you want it to run on a
 cadence without the flag:
 
@@ -397,12 +412,13 @@ Run the sync again immediately. Expect it to finish fast and call nothing:
 
 ```
 Already up to date.
-shared-memory: already synced 7d4e8fa…
+shared-memory: already synced at 7d4e8fa…
 ```
 
-There should be no `Skill re-seed complete.` line and no `Wrote N page(s)` line.
-Those are the only two assistant calls the script makes, so their absence is the
-proof it did no work.
+The script stops at the watermark check, before it calls the assistant at all.
+So there should be no `Skill re-seed complete.` line and nothing from the ingest
+step. Those are the only two assistant calls the script makes, so their absence
+is the proof it did no work.
 
 The watermark is what makes this happen. It should match the fixture's HEAD:
 
@@ -413,25 +429,26 @@ git -C "$FIXTURE" rev-parse HEAD
 
 ## Step 12 — Verify workspace hygiene
 
-The clone and the watermark live in the workspace but must never show up as
-workspace changes.
+The plugin, the clone and the watermark all live in the workspace, but none of
+them may show up as workspace changes.
 
 ```bash
-git -C "$WS" status --short | grep 'plugins/shared-memory/data' || echo "no data noise"
+git -C "$WS" status --short | grep 'plugins/shared-memory' || echo "no plugin noise"
 ```
 
-Expect `no data noise`. That is the exclude line from step 6 doing its job.
+Expect `no plugin noise`. That is the exclude line from step 6 doing its job.
+It covers the whole plugin directory, so the nested clone you made in step 3
+never reaches the workspace's index as a gitlink.
 
-The plugin's own checkout should show nothing from the sync either, because its
-`.gitignore` covers `data/` and the `skills` symlink:
+The plugin's own checkout should be clean too. Its `.gitignore` covers `data/`,
+the `skills` symlink, and `config.json`:
 
 ```bash
 git -C "$WS/plugins/shared-memory" status --short
 ```
 
-Expect exactly one line, `?? config.json`. That is the config you wrote in step
-3, which is local to this install and not tracked. Nothing from `data/` and no
-`skills` entry should appear.
+Expect no output at all. The config you wrote in step 3 is local to this install
+and ignored, and nothing from `data/` or the `skills` link should appear either.
 
 ## Troubleshooting
 
@@ -481,18 +498,33 @@ problem.
 **Consolidation lock.** Ingest holds the memory consolidation lock while it
 writes, so a concurrent consolidation pass makes it fail with
 `Memory ingest rejected: consolidation lock held by <holder>. Retry after the
-current writer finishes.` This is expected contention, not a bug. The script
-exits before writing `data/last-sha`, so the next tick reprocesses the whole
-delta from scratch. Wait and re-run.
+current writer finishes.` This is expected contention, not a bug. Nothing is
+imported and the watermark stays put, so the next tick reprocesses the same
+delta. Wait and re-run.
 
 **`jq: command not found`.** Install `jq`.
 
 **`assistant: command not found`.** Only happens when you run the script by
 hand. Put the assistant binary on your PATH.
 
-In every failure case the watermark is left alone. It advances only after both
-halves that ran have succeeded, so a failed run never half-advances and never
-leaves partial state behind.
+For what advances the watermark and what does not, see
+[Failure semantics](../README.md#failure-semantics) in the README.
+
+### The sync keeps reporting the same clone problem
+
+A failed pull normally heals itself. Sync deletes `data/repo` and clones again,
+but only when the clone holds no unpushed commits and no uncommitted changes. If
+it holds either, sync keeps the clone and reports that the state needs manual
+resolution, then tries again on the next tick.
+
+Look at what is in the way:
+
+```bash
+git -C "$WS/plugins/shared-memory/data/repo" status
+git -C "$WS/plugins/shared-memory/data/repo" log --oneline @{u}..
+```
+
+Land or drop the local work. The next tick recovers on its own.
 
 ### The skill is not there, or is not recalled
 
@@ -535,13 +567,27 @@ Check the page parses:
 assistant memory v2 validate
 ```
 
-Check the slug is not under a reserved prefix. Nothing may live directly under
-`concepts/skills/` or `concepts/cli-commands/` in the content repo. Both names
-are reserved by the memory substrate, so pages there are rejected or left
-unreachable.
+The slug is not the problem. Shared pages are ingested under `shared/`, so
+nothing in the content repo lands on a reserved slug. See
+[Names to avoid](../README.md#names-to-avoid) in the README.
 
 Both `assistant memory ingest` and `assistant memory v2 reembed-skills` need
 concept-page memory active. See the prerequisites.
+
+### A page never reaches disk at all
+
+Ingest rejected it. A page that fails validation is reported as a warning with
+its slug named, while the rest of the batch imports. Read the run to find the
+slug and the reason:
+
+```bash
+assistant schedules runs "$SCHED" --limit 1 --json | jq -r '.runs[0].output'
+assistant schedules runs "$SCHED" --limit 1 --json | jq -r '.runs[0].error'
+```
+
+The sync still counts as done, and the watermark still advances. So fix the page
+in the content repo and commit. The next sync picks the fix up like any other
+change.
 
 ### The sync says "unconfigured, skipping"
 
