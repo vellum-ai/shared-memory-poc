@@ -207,8 +207,22 @@ function outputText(value: Buffer): string {
 
 async function resolveCommitIdentity(
   repoDir: string,
+  pluginDir: string,
   signal?: AbortSignal,
 ): Promise<Record<string, string>> {
+  // The author block in config.json is the install's declared identity, so it
+  // wins over whatever Git config the checkout happens to inherit. It is what
+  // lets digests attribute each publication to the person behind the
+  // assistant rather than to a shared generic identity.
+  const config = await readRepositoryConfig(pluginDir);
+  if (config.author) {
+    return {
+      GIT_AUTHOR_NAME: config.author.name,
+      GIT_AUTHOR_EMAIL: config.author.email,
+      ...COMMITTER_IDENTITY,
+    };
+  }
+
   const readConfig = (key: string) =>
     runRepositoryGit(repoDir, ["config", "--get", key], {
       signal,
@@ -235,7 +249,7 @@ async function resolveCommitIdentity(
   ) {
     throw new SharedMemoryPublishError(
       "GIT_IDENTITY_MISSING",
-      "Configure a Git author name and email for the shared-memory repository before publishing.",
+      'Configure the publishing identity before publishing: set {"author": {"name": ..., "email": ...}} in the plugin\'s config.json (the sync schedule fills it in from the guardian contact when it can), or configure a Git author for the clone.',
     );
   }
   return {
@@ -573,7 +587,7 @@ async function createCommit(
   const indexPath = join(pluginDir, "data", `publish-index.${randomUUID()}`);
   const indexEnv = { GIT_INDEX_FILE: indexPath };
   try {
-    const commitIdentity = await resolveCommitIdentity(revision.repoDir, signal);
+    const commitIdentity = await resolveCommitIdentity(revision.repoDir, pluginDir, signal);
     await runRepositoryGit(revision.repoDir, ["read-tree", proposal.expectedHead], {
       signal,
       env: indexEnv,

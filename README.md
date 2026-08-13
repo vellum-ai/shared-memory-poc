@@ -269,6 +269,32 @@ retries the same range on the next tick. The notification carries a dedupe key
 made from that range, so the router drops the duplicate and the user is
 notified once.
 
+## Publishing identity
+
+Every commit the publish tools create is attributed to an author, and the
+digest is what that attribution is for: it reports shared-knowledge changes
+per person. If every assistant published as the same generic identity, every
+digest would credit one name for everyone's work.
+
+The author comes from an optional block in `config.json`:
+
+```json
+{ "author": { "name": "Aaron Levin", "email": "aaron@vellum.ai" } }
+```
+
+Nobody has to write it by hand. When the block is missing, the sync schedule
+fills it in from the guardian contact, the human this assistant belongs to,
+using the contact's display name and primary email channel. A block that is
+already present is never touched, so a hand-written one wins. If the guardian
+has no email channel, sync says so on every tick and publishing refuses with
+`GIT_IDENTITY_MISSING` until the block exists.
+
+The block outranks whatever Git config the clone happens to inherit, so a
+stray global gitconfig on the host can never misattribute a publication. The
+committer, as opposed to the author, is always
+`Vellum Assistant <assistant@vellum.ai>`; that is the machinery's signature,
+while the author line is the person's.
+
 ## Install
 
 ### Concept-page memory
@@ -329,6 +355,24 @@ An install done in the other order heals itself. On the next boot the init hook
 writes the exclude line and then untracks the path with `git rm --cached`, so
 the workspace stops recording changes under it. The commits already made keep
 their entry, which is harmless.
+
+## Updating a deployed install
+
+A deployed install is a git clone, so updating it is `git pull` inside
+`plugins/shared-memory`. The daemon notices on its own: a source watcher
+fingerprints plugin directories every couple of seconds, and a changed plugin
+is redeployed in place, its tools re-registered and its `init` hook re-run.
+Schedule declarations reconcile within a minute.
+
+Two delays are worth knowing so they are not mistaken for breakage. The
+redeploy is asynchronous, so `assistant tools list` can lag a pull by a few
+seconds. And a conversation that is already mid-turn keeps the tool surface it
+started with; new or changed tools reach it on the next turn, not mid-stream.
+An assistant that pulls an update and immediately probes for the new tools in
+the same turn races exactly this and may conclude the tools are missing.
+Waiting a moment and checking in a fresh turn is enough. To force the point,
+`assistant plugins disable shared-memory && assistant plugins enable
+shared-memory` runs the reconcile synchronously.
 
 ## Working on the plugin
 
