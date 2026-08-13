@@ -1,0 +1,5 @@
+{
+  "expression": "*/30 * * * *",
+  "description": "Pull the shared content repo and register skills and memory pages",
+  "timeout_ms": 300000
+}
