@@ -103,15 +103,7 @@ export function untrackPluginPath(
   if (!listed.ok) return "failed";
   if (listed.stdout.trim().length === 0) return "not-tracked";
 
-  const removed = runGit(workspaceRoot, [
-    "rm",
-    "-r",
-    "-q",
-    "--cached",
-    "--ignore-unmatch",
-    "--",
-    relPath,
-  ]);
+  const removed = runGit(workspaceRoot, ["rm", "-r", "-q", "--cached", "--", relPath]);
   return removed.ok ? "untracked" : "failed";
 }
 

@@ -1,9 +1,10 @@
 /**
  * `init` hook: prepare the install's filesystem layout once per boot.
  *
- * A throw here aborts the plugin's load, so the whole body is guarded and
- * every failure is logged instead. A half-prepared workspace only costs the
- * team its shared content; it must never take the plugin down.
+ * The runtime catches whatever this hook throws and carries on, but it logs
+ * only a generic message, so the whole body is guarded here to report each
+ * failure with the paths it happened on. A half-prepared workspace costs the
+ * team its shared content and nothing more.
  */
 
 import { dirname, resolve } from "node:path";

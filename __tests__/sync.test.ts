@@ -1,21 +1,29 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { identify, runGit } from "./git-fixture.js";
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(REPO_ROOT, "schedules", "sync", "index.sh");
+
+// What the gate prints when it will not touch the clone, minus the path.
+const PRESERVE_MESSAGE =
+  "so it is preserved untouched; it may hold local work or be in a state sync cannot judge, so inspect it with git status and resolve by hand";
 
 // Stands in for the assistant CLI: records every invocation, reports whether an
 // ingest was handed a staging directory of the expected shape, and answers an
@@ -46,13 +54,6 @@ if [ -f "$dir/shared/deploy-runbook.md" ]; then
   printf 'staged\\n' >> "$SM_TEST_STAGE_LOG"
 else
   printf 'missing\\n' >> "$SM_TEST_STAGE_LOG"
-fi
-
-# With the daemon unreachable the real command still prints an error envelope
-# on stdout under --json, and exits 10.
-if [ -f "$SM_TEST_DEAD_INGEST" ]; then
-  printf '{"ok":false,"error":"Could not connect to the assistant at /tmp/assistant.sock.\\\\nRun \`assistant status\` to check, or \`assistant gateway start\` to start it.","partial":{"results":[],"written":0,"skipped":0,"invalid":0,"dryRun":false}}\\n'
-  exit 10
 fi
 
 # Output the script cannot read as a summary at all.
@@ -108,21 +109,10 @@ interface Fixture {
   calls: string;
   stageLog: string;
   failFlag: string;
-  deadFlag: string;
   garbageFlag: string;
 }
 
 const roots: string[] = [];
-
-function git(cwd: string, args: string[]): string {
-  // stderr is captured rather than inherited so the commands a test fails on
-  // purpose do not print over the test output.
-  return execFileSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
 
 function writeFile(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -130,20 +120,14 @@ function writeFile(path: string, contents: string): void {
 }
 
 function commit(repo: string, message: string): string {
-  git(repo, ["add", "-A"]);
-  git(repo, ["commit", "-q", "-m", message]);
-  return git(repo, ["rev-parse", "HEAD"]).trim();
-}
-
-function identify(repo: string): void {
-  git(repo, ["config", "user.name", "Fixture"]);
-  git(repo, ["config", "user.email", "fixture@example.com"]);
-  git(repo, ["config", "commit.gpgsign", "false"]);
+  runGit(repo, ["add", "-A"]);
+  runGit(repo, ["commit", "-q", "-m", message]);
+  return runGit(repo, ["rev-parse", "HEAD"]).trim();
 }
 
 function makeContentRepo(root: string): void {
   mkdirSync(root, { recursive: true });
-  git(root, ["init", "-q", "-b", "main"]);
+  runGit(root, ["init", "-q", "-b", "main"]);
   identify(root);
   writeFile(join(root, "skills", "demo", "SKILL.md"), "---\nname: demo\n---\n\nA demo skill.\n");
   writeFile(
@@ -198,7 +182,6 @@ function makeFixture(options: { config?: boolean } = {}): Fixture {
     calls: join(root, "calls.log"),
     stageLog: join(root, "stage.log"),
     failFlag: join(root, "fail-ingest"),
-    deadFlag: join(root, "dead-ingest"),
     garbageFlag: join(root, "garbage-ingest"),
   };
 }
@@ -224,7 +207,6 @@ function runSync(fixture: Fixture): { exitCode: number; stdout: string; stderr: 
       SM_TEST_CALLS: fixture.calls,
       SM_TEST_STAGE_LOG: fixture.stageLog,
       SM_TEST_FAIL_INGEST: fixture.failFlag,
-      SM_TEST_DEAD_INGEST: fixture.deadFlag,
       SM_TEST_GARBAGE_INGEST: fixture.garbageFlag,
     },
     stdout: "pipe",
@@ -267,14 +249,33 @@ function markClone(fixture: Fixture): string {
   return marker;
 }
 
+// The symlink the init hook lays down. Every shared skill reaches the assistant
+// through it, so it stops resolving the moment the clone is gone.
+function linkSkills(fixture: Fixture): string {
+  const linkPath = join(fixture.plugin, "skills");
+  symlinkSync("data/repo/skills", linkPath);
+  return linkPath;
+}
+
+// Ages a file so the script reads it as left behind by a process that is gone.
+function backdate(path: string, minutes: number): void {
+  const when = new Date(Date.now() - minutes * 60_000);
+  utimesSync(path, when, when);
+}
+
+// The staging clones the script builds under data/, which no run may leave.
+function tempClones(fixture: Fixture): string[] {
+  return readdirSync(join(fixture.plugin, "data")).filter((entry) => entry.startsWith("repo.new."));
+}
+
 // Replaces the clone with what a clone killed by the schedule timeout leaves: a
 // .git that knows the remote but has no commit at HEAD yet.
 function makePartialClone(fixture: Fixture): string {
   const clone = clonePath(fixture);
   rmSync(clone, { recursive: true, force: true });
   mkdirSync(clone, { recursive: true });
-  git(clone, ["init", "-q", "-b", "main"]);
-  git(clone, ["remote", "add", "origin", `file://${fixture.content}`]);
+  runGit(clone, ["init", "-q", "-b", "main"]);
+  runGit(clone, ["remote", "add", "origin", `file://${fixture.content}`]);
   return clone;
 }
 
@@ -290,7 +291,7 @@ describe("sync schedule", () => {
 
   beforeAll(() => {
     fixture = makeFixture();
-    seedSha = git(fixture.content, ["rev-parse", "HEAD"]).trim();
+    seedSha = runGit(fixture.content, ["rev-parse", "HEAD"]).trim();
   });
 
   test("first run clones the repo and syncs both halves", () => {
@@ -393,7 +394,7 @@ describe("clone recovery", () => {
     const marker = markClone(fixture);
     // Stops part way through with the rebase state still on disk, the way a
     // tick killed by the schedule timeout leaves it.
-    expect(() => git(clone, ["rebase", "--exec", "false", "HEAD~1"])).toThrow();
+    expect(() => runGit(clone, ["rebase", "--exec", "false", "HEAD~1"])).toThrow();
     expect(existsSync(join(clone, ".git", "rebase-merge"))).toBe(true);
 
     writeFile(join(fixture.content, "concepts", "rotation.md"), "---\ntitle: Rotation\n---\n\nThe rotation.\n");
@@ -405,8 +406,64 @@ describe("clone recovery", () => {
     expect(result.exitCode).toBe(0);
     expect(existsSync(join(clone, ".git", "rebase-merge"))).toBe(false);
     expect(existsSync(marker)).toBe(true);
-    expect(git(clone, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("main");
+    expect(runGit(clone, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("main");
     expect(lastSha(fixture)).toBe(sha);
+  });
+
+  test("an index.lock older than half an hour is cleared and the clone recovers in place", () => {
+    const fixture = makeFixture();
+    addOncallPage(fixture);
+    expect(runSync(fixture).exitCode).toBe(0);
+
+    const clone = clonePath(fixture);
+    identify(clone);
+    const marker = markClone(fixture);
+    // What a tick killed by the timeout leaves behind: rebase state plus the
+    // index lock, which the abort itself then fails on.
+    expect(() => runGit(clone, ["rebase", "--exec", "false", "HEAD~1"])).toThrow();
+    const lock = join(clone, ".git", "index.lock");
+    writeFileSync(lock, "");
+    backdate(lock, 45);
+    expect(() => runGit(clone, ["rebase", "--abort"])).toThrow();
+
+    writeFile(join(fixture.content, "concepts", "rotation.md"), "---\ntitle: Rotation\n---\n\nThe rotation.\n");
+    const sha = commit(fixture.content, "add the rotation page");
+    resetCalls(fixture);
+
+    const result = runSync(fixture);
+
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(lock)).toBe(false);
+    expect(existsSync(join(clone, ".git", "rebase-merge"))).toBe(false);
+    expect(existsSync(marker)).toBe(true);
+    expect(runGit(clone, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("main");
+    expect(runGit(clone, ["rev-parse", "HEAD"]).trim()).toBe(sha);
+    expect(lastSha(fixture)).toBe(sha);
+  });
+
+  test("an index.lock a live git process could still hold is left alone", () => {
+    const fixture = makeFixture();
+    expect(runSync(fixture).exitCode).toBe(0);
+
+    const clone = clonePath(fixture);
+    const seedSha = lastSha(fixture);
+    identify(clone);
+    writeFile(join(clone, "concepts", "draft.md"), "---\ntitle: Draft\n---\n\nNot pushed yet.\n");
+    const localSha = commit(clone, "outbound work that is not pushed");
+    const lock = join(clone, ".git", "index.lock");
+    writeFileSync(lock, "");
+    backdate(lock, 5);
+
+    addOncallPage(fixture);
+    resetCalls(fixture);
+
+    const result = runSync(fixture);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(existsSync(lock)).toBe(true);
+    expect(result.stdout).toContain(PRESERVE_MESSAGE);
+    expect(runGit(clone, ["rev-parse", "HEAD"]).trim()).toBe(localSha);
+    expect(lastSha(fixture)).toBe(seedSha);
   });
 
   test("a pull failure on a clone with nothing local re-clones and completes", () => {
@@ -426,9 +483,38 @@ describe("clone recovery", () => {
     expect(result.exitCode).toBe(0);
     expect(existsSync(marker)).toBe(false);
     expect(existsSync(join(clone, ".git", "index.lock"))).toBe(false);
-    expect(git(clone, ["rev-parse", "HEAD"]).trim()).toBe(sha);
+    expect(runGit(clone, ["rev-parse", "HEAD"]).trim()).toBe(sha);
+    expect(tempClones(fixture)).toEqual([]);
     expect(calls(fixture)[0]).toMatch(/^memory ingest --dir \S+ --overwrite --json$/);
     expect(lastSha(fixture)).toBe(sha);
+  });
+
+  test("a pull failure the replacement clone cannot fix keeps the old clone serving skills", () => {
+    const fixture = makeFixture();
+    expect(runSync(fixture).exitCode).toBe(0);
+
+    const clone = clonePath(fixture);
+    const seedSha = runGit(fixture.content, ["rev-parse", "HEAD"]).trim();
+    const marker = markClone(fixture);
+    const link = linkSkills(fixture);
+    // A healthy clone the gate rules safe to replace, and a remote that has
+    // gone away, so the replacement cannot be fetched either.
+    writeFileSync(join(clone, ".git", "index.lock"), "");
+    rmSync(fixture.content, { recursive: true, force: true });
+    resetCalls(fixture);
+
+    const result = runSync(fixture);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toContain("the old one is kept");
+    expect(existsSync(marker)).toBe(true);
+    expect(runGit(clone, ["rev-parse", "HEAD"]).trim()).toBe(seedSha);
+    // The shared skills are still reachable through the link for the outage.
+    expect(existsSync(link)).toBe(true);
+    expect(existsSync(join(link, "demo", "SKILL.md"))).toBe(true);
+    expect(tempClones(fixture)).toEqual([]);
+    expect(calls(fixture)).toEqual([]);
+    expect(lastSha(fixture)).toBe(seedSha);
   });
 
   test("a pull failure on a clone holding an unpushed commit preserves it", () => {
@@ -448,9 +534,9 @@ describe("clone recovery", () => {
     const result = runSync(fixture);
 
     expect(result.exitCode).not.toBe(0);
-    expect(result.stdout).toContain("preserved");
+    expect(result.stdout).toContain(PRESERVE_MESSAGE);
     expect(calls(fixture)).toEqual([]);
-    expect(git(clone, ["rev-parse", "HEAD"]).trim()).toBe(localSha);
+    expect(runGit(clone, ["rev-parse", "HEAD"]).trim()).toBe(localSha);
     expect(existsSync(join(clone, "concepts", "draft.md"))).toBe(true);
     expect(lastSha(fixture)).toBe(seedSha);
   });
@@ -466,10 +552,10 @@ describe("clone recovery", () => {
     // The work is parked on a branch that is not checked out, and the clone is
     // left on the configured branch with a clean tree, so nothing about the
     // checked out branch reveals this commit.
-    git(clone, ["checkout", "-q", "-b", "draft"]);
+    runGit(clone, ["checkout", "-q", "-b", "draft"]);
     writeFile(join(clone, "concepts", "draft.md"), "---\ntitle: Draft\n---\n\nNot pushed yet.\n");
     const draftSha = commit(clone, "outbound work parked on a side branch");
-    git(clone, ["checkout", "-q", "main"]);
+    runGit(clone, ["checkout", "-q", "main"]);
     writeFileSync(join(clone, ".git", "index.lock"), "");
 
     addOncallPage(fixture);
@@ -478,10 +564,10 @@ describe("clone recovery", () => {
     const result = runSync(fixture);
 
     expect(result.exitCode).not.toBe(0);
-    expect(result.stdout).toContain("preserved");
+    expect(result.stdout).toContain(PRESERVE_MESSAGE);
     expect(calls(fixture)).toEqual([]);
     expect(existsSync(marker)).toBe(true);
-    expect(git(clone, ["rev-parse", "draft"]).trim()).toBe(draftSha);
+    expect(runGit(clone, ["rev-parse", "draft"]).trim()).toBe(draftSha);
     expect(lastSha(fixture)).toBe(seedSha);
   });
 
@@ -496,8 +582,8 @@ describe("clone recovery", () => {
     // A pull that stashed and then failed leaves the tree clean on the
     // configured branch with the work held only in the stash.
     writeFile(join(clone, "concepts", "deploy-runbook.md"), "---\ntitle: Deploy runbook\n---\n\nStashed edit.\n");
-    git(clone, ["stash", "push", "-q", "-m", "autostash"]);
-    expect(git(clone, ["status", "--porcelain"])).toBe("");
+    runGit(clone, ["stash", "push", "-q", "-m", "autostash"]);
+    expect(runGit(clone, ["status", "--porcelain"])).toBe("");
     writeFileSync(join(clone, ".git", "index.lock"), "");
 
     addOncallPage(fixture);
@@ -506,10 +592,10 @@ describe("clone recovery", () => {
     const result = runSync(fixture);
 
     expect(result.exitCode).not.toBe(0);
-    expect(result.stdout).toContain("preserved");
+    expect(result.stdout).toContain(PRESERVE_MESSAGE);
     expect(calls(fixture)).toEqual([]);
     expect(existsSync(marker)).toBe(true);
-    expect(git(clone, ["stash", "list"])).toContain("autostash");
+    expect(runGit(clone, ["stash", "list"])).toContain("autostash");
     expect(lastSha(fixture)).toBe(seedSha);
   });
 
@@ -528,7 +614,7 @@ describe("clone recovery", () => {
     const result = runSync(fixture);
 
     expect(result.exitCode).not.toBe(0);
-    expect(result.stdout).toContain("preserved");
+    expect(result.stdout).toContain(PRESERVE_MESSAGE);
     expect(existsSync(join(clone, "concepts", "wip.md"))).toBe(true);
     expect(lastSha(fixture)).toBe(seedSha);
   });
@@ -539,9 +625,9 @@ describe("clone recovery", () => {
 
     const clone = makePartialClone(fixture);
     // The state the script has to read: no commit at HEAD, nothing in the tree.
-    expect(() => git(clone, ["rev-parse", "--verify", "HEAD^{commit}"])).toThrow();
-    expect(() => git(clone, ["rev-parse", "--abbrev-ref", "@{upstream}"])).toThrow();
-    expect(git(clone, ["status", "--porcelain"])).toBe("");
+    expect(() => runGit(clone, ["rev-parse", "--verify", "HEAD^{commit}"])).toThrow();
+    expect(() => runGit(clone, ["rev-parse", "--abbrev-ref", "@{upstream}"])).toThrow();
+    expect(runGit(clone, ["status", "--porcelain"])).toBe("");
 
     const sha = addOncallPage(fixture);
     resetCalls(fixture);
@@ -549,7 +635,7 @@ describe("clone recovery", () => {
     const result = runSync(fixture);
 
     expect(result.exitCode).toBe(0);
-    expect(git(clone, ["rev-parse", "HEAD"]).trim()).toBe(sha);
+    expect(runGit(clone, ["rev-parse", "HEAD"]).trim()).toBe(sha);
     expect(calls(fixture)[0]).toMatch(/^memory ingest --dir \S+ --overwrite --json$/);
     expect(lastSha(fixture)).toBe(sha);
   });
@@ -566,18 +652,49 @@ describe("clone recovery", () => {
     const result = runSync(fixture);
 
     expect(result.exitCode).not.toBe(0);
-    expect(result.stdout).toContain("preserved");
+    expect(result.stdout).toContain(PRESERVE_MESSAGE);
     expect(existsSync(join(clone, "concepts", "draft.md"))).toBe(true);
+    expect(calls(fixture)).toEqual([]);
+    expect(lastSha(fixture)).toBe(seedSha);
+  });
+
+  test("a clone parked on an orphan branch with work on another branch is preserved", () => {
+    const fixture = makeFixture();
+    expect(runSync(fixture).exitCode).toBe(0);
+
+    const clone = clonePath(fixture);
+    const seedSha = lastSha(fixture);
+    identify(clone);
+    const marker = markClone(fixture);
+    runGit(clone, ["checkout", "-q", "-b", "draft"]);
+    writeFile(join(clone, "concepts", "draft.md"), "---\ntitle: Draft\n---\n\nNot pushed yet.\n");
+    const draftSha = commit(clone, "outbound work parked on a side branch");
+    // An orphan checkout emptied out reads like a clone that never finished:
+    // no commit at HEAD and a clean tree, while the draft branch holds work.
+    runGit(clone, ["checkout", "-q", "--orphan", "blank"]);
+    runGit(clone, ["rm", "-r", "-q", "-f", "."]);
+    expect(() => runGit(clone, ["rev-parse", "--verify", "HEAD^{commit}"])).toThrow();
+    expect(runGit(clone, ["status", "--porcelain"])).toBe("");
+
+    addOncallPage(fixture);
+    resetCalls(fixture);
+
+    const result = runSync(fixture);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toContain(PRESERVE_MESSAGE);
+    expect(existsSync(marker)).toBe(true);
+    expect(runGit(clone, ["rev-parse", "draft"]).trim()).toBe(draftSha);
     expect(calls(fixture)).toEqual([]);
     expect(lastSha(fixture)).toBe(seedSha);
   });
 
   test("a branch change in config re-clones onto the new branch", () => {
     const fixture = makeFixture();
-    git(fixture.content, ["checkout", "-q", "-b", "release"]);
+    runGit(fixture.content, ["checkout", "-q", "-b", "release"]);
     writeFile(join(fixture.content, "concepts", "release-notes.md"), "---\ntitle: Release notes\n---\n\nWhat shipped.\n");
     const releaseSha = commit(fixture.content, "add the release notes page");
-    git(fixture.content, ["checkout", "-q", "main"]);
+    runGit(fixture.content, ["checkout", "-q", "main"]);
 
     expect(runSync(fixture).exitCode).toBe(0);
 
@@ -590,8 +707,9 @@ describe("clone recovery", () => {
 
     expect(result.exitCode).toBe(0);
     expect(existsSync(marker)).toBe(false);
-    expect(git(clone, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("release");
-    expect(git(clone, ["rev-parse", "HEAD"]).trim()).toBe(releaseSha);
+    expect(runGit(clone, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("release");
+    expect(runGit(clone, ["rev-parse", "HEAD"]).trim()).toBe(releaseSha);
+    expect(tempClones(fixture)).toEqual([]);
     expect(lastSha(fixture)).toBe(releaseSha);
   });
 });
@@ -617,30 +735,6 @@ describe("ingest outcomes", () => {
     const settled = runSync(fixture);
     expect(settled.exitCode).toBe(0);
     expect(calls(fixture)).toEqual([]);
-  });
-
-  test("an ingest that never reaches the daemon leaves the watermark behind", () => {
-    const fixture = makeFixture();
-    expect(runSync(fixture).exitCode).toBe(0);
-    const before = lastSha(fixture);
-
-    addOncallPage(fixture);
-    writeFileSync(fixture.deadFlag, "");
-    resetCalls(fixture);
-
-    const result = runSync(fixture);
-
-    expect(result.exitCode).not.toBe(0);
-    expect(result.stdout).toContain("Could not connect to the assistant");
-    expect(lastSha(fixture)).toBe(before);
-
-    rmSync(fixture.deadFlag);
-    resetCalls(fixture);
-
-    const retried = runSync(fixture);
-
-    expect(retried.exitCode).toBe(0);
-    expect(lastSha(fixture)).not.toBe(before);
   });
 
   test("an ingest that prints no summary at all leaves the watermark behind", () => {
