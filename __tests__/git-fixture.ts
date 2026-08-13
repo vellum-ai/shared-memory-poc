@@ -26,9 +26,15 @@ export function identify(repo: string): void {
 }
 
 /** Creates `root` if needed and makes it a repo on `main` that can commit. */
-export function initRepo(root: string): void {
+export function initRepo(root: string, objectFormat?: "sha1" | "sha256"): void {
   mkdirSync(root, { recursive: true });
-  runGit(root, ["init", "-q", "-b", "main"]);
+  runGit(root, [
+    "init",
+    "-q",
+    "-b",
+    "main",
+    ...(objectFormat === undefined ? [] : [`--object-format=${objectFormat}`]),
+  ]);
   identify(root);
 }
 

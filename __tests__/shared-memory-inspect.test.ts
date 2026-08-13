@@ -139,6 +139,7 @@ describe("shared_memory_inspect tool contract", () => {
     expect(policy).toContain("relationship");
     expect(policy).toContain("identifiable person");
     expect(policy).toContain("technical decisions");
+    expect(body.policyFingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 
   test("setup guidance narrows sharing without overriding hard exclusions", async () => {
@@ -280,6 +281,23 @@ describe("shared memory inspection", () => {
     const second = await inspect(fixture, { query: "gateway" });
     expect(effectivePolicy(second.body)).toContain("architecture decisions only");
     expect(effectivePolicy(second.body)).not.toContain("deployment runbooks only");
+    expect(second.body.policyFingerprint).not.toBe(first.body.policyFingerprint);
+  });
+
+  test("allows a distinct push-only origin for read-only inspection", async () => {
+    const fixture = makeFixture();
+    runGit(fixture.checkout, [
+      "remote",
+      "set-url",
+      "--push",
+      "origin",
+      `${fixture.repoUrl}-write`,
+    ]);
+
+    const result = await inspect(fixture, { query: "gateway" });
+
+    expect(result.reply.isError).toBe(false);
+    expect(result.body.expectedHead).toBe(fixture.expectedHead);
   });
 
   test("rejects a checkout whose origin or branch no longer matches config", async () => {
