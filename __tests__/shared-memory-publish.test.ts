@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import type { ToolContext } from "@vellumai/plugin-api";
 
@@ -354,6 +354,49 @@ describe("atomic shared memory publishing", () => {
     expect(result.reply.isError).toBe(false);
     expect(remoteFile(fixture, "concepts/deploy-runbook.md")).toBe(normalized);
     expect(runGit(fixture.checkout, ["status", "--porcelain"])).toBe("");
+  });
+
+  test("ignores non-versioned global attributes while publishing", async () => {
+    const fixture = makeFixture();
+    const attributes = join(fixture.root, "global-attributes");
+    writeFile(attributes, "concepts/global.md filter=global-override\n");
+    configureCleanFilter(fixture, "global-override", "printf 'overridden\\n'");
+    runGit(fixture.checkout, ["config", "core.attributesFile", attributes]);
+    const content = `${DEPLOY_CONTENT}\nRepository content.\n`;
+
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        { path: "concepts/global.md", content },
+      ]),
+    );
+
+    expect(result.reply.isError).toBe(false);
+    expect(remoteFile(fixture, "concepts/global.md")).toBe(content);
+  });
+
+  test("rejects repository-local info attributes", async () => {
+    const fixture = makeFixture();
+    const infoAttributes = runGit(fixture.checkout, [
+      "rev-parse",
+      "--git-path",
+      "info/attributes",
+    ]).trim();
+    writeFile(resolve(fixture.checkout, infoAttributes), "*.md -text\n");
+
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        {
+          path: "concepts/deploy-runbook.md",
+          content: `${DEPLOY_CONTENT}\nRejected update.\n`,
+        },
+      ]),
+    );
+
+    expect(result.reply.isError).toBe(true);
+    expect(errorCode(result.body)).toBe("REPOSITORY_MISMATCH");
+    expect(remoteHead(fixture)).toBe(fixture.expectedHead);
   });
 
   test("rejects invalid Markdown produced by repository clean filters", async () => {

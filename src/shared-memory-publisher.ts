@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
@@ -323,32 +323,44 @@ async function changedUpserts(
   pluginDir: string,
   signal?: AbortSignal,
 ): Promise<ChangedUpsert[]> {
-  const sourceCheck = await runRepositoryGit(
-    revision.repoDir,
-    ["check-attr", "--source", revision.expectedHead, "--all", "--", upserts[0].path],
-    { signal, allowFailure: true },
-  );
-  if (sourceCheck.exitCode !== 0) {
-    throw new SharedMemoryPublishError(
-      "REPOSITORY_ERROR",
-      "The installed Git version cannot read attributes from the inspected commit.",
-    );
-  }
+  const infoAttributesPath = await resolveInfoAttributesPath(revision, signal);
+  await assertNoInfoAttributes(infoAttributesPath);
 
-  const objectPath = outputText(
-    (
-      await runRepositoryGit(revision.repoDir, ["rev-parse", "--git-path", "objects"], {
-        signal,
-      })
-    ).stdout,
-  );
   const temporaryObjects = await mkdtemp(join(pluginDir, "data", "publish-objects."));
-  const objectEnv = {
-    GIT_ALTERNATE_OBJECT_DIRECTORIES: resolve(revision.repoDir, objectPath),
-    GIT_ATTR_SOURCE: revision.expectedHead,
-    GIT_OBJECT_DIRECTORY: temporaryObjects,
-  };
   try {
+    const emptyAttributes = join(temporaryObjects, "global-attributes");
+    await writeFile(emptyAttributes, "");
+    const attributeEnv = {
+      GIT_ATTR_NOSYSTEM: "1",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.attributesFile",
+      GIT_CONFIG_VALUE_0: emptyAttributes,
+    };
+    const sourceCheck = await runRepositoryGit(
+      revision.repoDir,
+      ["check-attr", "--source", revision.expectedHead, "--all", "--", upserts[0].path],
+      { signal, allowFailure: true, env: attributeEnv },
+    );
+    if (sourceCheck.exitCode !== 0) {
+      throw new SharedMemoryPublishError(
+        "REPOSITORY_ERROR",
+        "The installed Git version cannot read attributes from the inspected commit.",
+      );
+    }
+
+    const objectPath = outputText(
+      (
+        await runRepositoryGit(revision.repoDir, ["rev-parse", "--git-path", "objects"], {
+          signal,
+        })
+      ).stdout,
+    );
+    const objectEnv = {
+      ...attributeEnv,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: resolve(revision.repoDir, objectPath),
+      GIT_ATTR_SOURCE: revision.expectedHead,
+      GIT_OBJECT_DIRECTORY: temporaryObjects,
+    };
     const changed: ChangedUpsert[] = [];
     let totalBytes = 0;
     for (const upsert of upserts) {
@@ -370,10 +382,45 @@ async function changedUpserts(
         });
       }
     }
+    await assertNoInfoAttributes(infoAttributesPath);
     return changed;
   } finally {
     await rm(temporaryObjects, { recursive: true, force: true });
   }
+}
+
+async function resolveInfoAttributesPath(
+  revision: RepositoryRevision,
+  signal?: AbortSignal,
+): Promise<string> {
+  const infoAttributesPath = outputText(
+    (
+      await runRepositoryGit(
+        revision.repoDir,
+        ["rev-parse", "--git-path", "info/attributes"],
+        { signal },
+      )
+    ).stdout,
+  );
+  return resolve(revision.repoDir, infoAttributesPath);
+}
+
+async function assertNoInfoAttributes(infoAttributesPath: string): Promise<void> {
+  try {
+    await lstat(infoAttributesPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw new SharedMemoryPublishError(
+      "REPOSITORY_ERROR",
+      "Git could not verify repository-local attributes.",
+    );
+  }
+  throw new SharedMemoryPublishError(
+    "REPOSITORY_MISMATCH",
+    "Remove the repository-local info/attributes file before publishing shared memory.",
+  );
 }
 
 async function filterAndValidateBlob(
