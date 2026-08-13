@@ -28,7 +28,9 @@ If you cannot turn the flag on, the runbook still works. Step 7 has a fallback
 that runs the sync script by hand.
 
 **`jq` and `git` on your PATH.** The sync script calls `jq` to read
-`config.json` and `git` to pull the content repo.
+`config.json` and `git` to pull the content repo. For the GitHub OAuth path,
+`assistant` must also be available to the daemon, because the credential helper
+asks the connected GitHub OAuth provider for a short-lived clone token.
 
 **Concept-page memory active.** Ingest and the skill reseed both need it. It is
 on by default.
@@ -43,6 +45,30 @@ If the gate is off, steps 7 and 9 fail. For what the three keys mean, why a
 stock assistant prints `(not set)` for all of them and is fine, and which
 settings turn the gate off, see
 [Concept-page memory](../README.md#concept-page-memory) in the README.
+
+## Private GitHub OAuth check
+
+The OAuth path is platform-specific. It requires a connected GitHub account,
+an HTTPS repository URL, and the executable `github-oauth-credential.sh` file
+from this plugin. The helper fetches a short-lived credential for each Git
+operation and does not persist the token.
+
+Before running the end-to-end steps, verify the helper directly against a
+private repository the connected account can read:
+
+```bash
+HELPER="$WS/plugins/shared-memory/github-oauth-credential.sh"
+GIT_TERMINAL_PROMPT=0 git \
+  -c credential.helper="$HELPER" \
+  -c credential.useHttpPath=true \
+  ls-remote "https://github.com/OWNER/REPO.git" HEAD
+```
+
+The command should print the remote `HEAD` SHA. If it fails, check that the
+GitHub OAuth connection is active, that the account can read the repository,
+and that the daemon or shell can resolve both `assistant` and `jq`. A restricted
+daemon environment can set `SHARED_MEMORY_ASSISTANT_BIN` and
+`SHARED_MEMORY_JQ_BIN` to executable names or absolute paths.
 
 ## Step 1 — Find the workspace
 

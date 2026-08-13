@@ -19,6 +19,11 @@ if [ -z "$REPO_URL" ]; then
 fi
 
 BRANCH="$(jq -r '.branch // "main"' "$CONFIG")"
+GIT_OAUTH_HELPER="$PLUGIN_DIR/github-oauth-credential.sh"
+
+git() {
+  command git -c credential.helper="$GIT_OAUTH_HELPER" -c credential.useHttpPath=true "$@"
+}
 
 # The staging directory the pages are ingested from, the replacement clone and
 # the lock, none of which may outlive the run.
