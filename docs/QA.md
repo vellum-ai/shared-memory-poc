@@ -39,12 +39,10 @@ assistant config get memory.v2.enabled
 assistant config get memory.v3.live
 ```
 
-`(not set)` counts as on. `memory.v2.enabled` defaults to true and the gate
-reads the defaulted config, so a stock assistant prints `(not set)` for all
-three keys and is fine. Two settings fail this check. `memory.enabled` set to
-`false` is the master Memory opt-out and stops ingest and the reseed whatever
-the tier keys say. `memory.v2.enabled` set to `false` fails too, unless
-`memory.v3.live` is `true`. In either case steps 7 and 9 fail.
+If the gate is off, steps 7 and 9 fail. For what the three keys mean, why a
+stock assistant prints `(not set)` for all of them and is fine, and which
+settings turn the gate off, see
+[Concept-page memory](../README.md#concept-page-memory) in the README.
 
 ## Step 1 — Find the workspace
 
@@ -121,12 +119,11 @@ vellum sleep --wait 60s
 `--wait` lets in-flight background work drain first, so you do not stop the
 daemon mid-job. Without a duration it waits as long as it takes.
 
-A running assistant commits its own workspace, on a heartbeat and again on
-shutdown, and the exclude line that keeps the plugin out of that history is not
-written until the init hook runs at the next boot. Clone into a live workspace
-and the commit can land first, recording `plugins/shared-memory` as a
-nested-repo entry. Stopping first closes that window, and step 12 checks that it
-stayed closed.
+Installing into a live workspace can get the plugin directory recorded in the
+workspace's own git history. Stopping first closes that window, and step 12
+checks that it stayed closed. See
+[Why the daemon goes down first](../README.md#why-the-daemon-goes-down-first) in
+the README.
 
 ## Step 4 — Install the plugin and start the daemon
 
@@ -330,8 +327,10 @@ Expect the id `demo`, the source `plugin:shared-memory`, and the state
 ```
 
 The catalog re-walks the filesystem on every call, so this does not need another
-restart. That is true of skills only. The plugin's hooks and its schedule do
-need a restart.
+restart. That is true of skills only. The plugin's hooks are loaded once per
+boot, so a change to one needs a restart. Its schedule declaration does not: the
+reconciler sweeps every 60 seconds and picks the change up while the daemon
+runs.
 
 Now check the assistant actually uses it. Stream events in the background, send
 a message that matches the skill's description, then stop the stream.
@@ -484,10 +483,10 @@ git -C "$WS" log --oneline -- plugins/shared-memory
 
 Expect no output on a fresh install done in this runbook's order. Commits here
 mean the path was recorded before the init hook first ran, which is what step 3
-avoids. Those commits are harmless and stay as they are; the hook untracks the
-path on the boot after it finds it tracked. What matters is that the `ls-files`
-check above is empty now. If it is not, the hook has not run since the path was
-committed, so restart the daemon and re-check.
+avoids and which the next boot heals; see
+[Why the daemon goes down first](../README.md#why-the-daemon-goes-down-first) in
+the README. What matters is that the `ls-files` check above is empty now. If it
+is not, restart the daemon and re-check.
 
 The plugin's own checkout should be clean too. Its `.gitignore` covers `data/`,
 the `skills` symlink, `config.json` and `node_modules/`:
@@ -525,9 +524,15 @@ assistant notifications list
 Look for `Plugin schedule error: sync`. The body names the reason. Two things to
 know about it. The notification is deduplicated per schedule per UTC day, so a
 second bad reconcile on the same day is silent. And
-`assistant plugins inspect shared-memory` will not tell you about a parse error
-either. A broken declaration simply vanishes from its `schedules` block there.
-The notification and the daemon log are the only places it surfaces.
+`assistant plugins inspect shared-memory` cannot stand in for it. Inspect reads
+the `schedules/` directory itself and only checks its shape, so what it shows
+depends on how the declaration broke. A structural break, such as malformed JSON
+in `schedules/sync/config.json` or a missing `expression`, drops the row from
+the `schedules` block entirely. A declaration that is valid JSON but that the
+daemon rejects, such as a bad cron expression, an unknown key, or a `timeout_ms`
+outside the allowed range, still lists there and looks exactly like a working
+one. Inspect never names the error in either case. The notification and the
+daemon log are the only places it surfaces.
 
 Finally, confirm the plugin itself loaded at all with `assistant plugins list`.
 
@@ -574,16 +579,38 @@ For what advances the watermark and what does not, see
 
 ### The sync keeps reporting the same clone problem
 
-A failed pull heals itself unless the clone holds local work. For what counts as
-local work, see
+The run exits nonzero and ends with this line:
+
+```
+shared-memory: cannot refresh <repo path>, so it is preserved untouched; it may hold local work or be in a state sync cannot judge, so inspect it with git status and resolve by hand
+```
+
+A failed pull heals itself unless the clone is preserved, and the clone is
+preserved whenever sync could not prove it free of local work. That is a wider
+net than holding local work. A detached HEAD, or a branch with no upstream, is
+preserved too, and either can hold nothing at all. See
 [Recovering a wedged clone](../README.md#recovering-a-wedged-clone) in the
 README.
 
-Find what is in the way. One command per kind:
+Start with `status`. It names both kinds of cause:
 
 ```bash
 REPO="$WS/plugins/shared-memory/data/repo"
 git -C "$REPO" status
+```
+
+`HEAD detached at …`, or a branch with no `Your branch is up to date with …`
+line, is the second kind. Nothing is in the way; sync just will not judge that
+state. Put the clone back on the branch from `config.json`, `main` here:
+
+```bash
+git -C "$REPO" checkout main
+```
+
+For real local work, one command per kind. Uncommitted changes are in the
+`status` above:
+
+```bash
 git -C "$REPO" log --oneline --branches --not --remotes
 git -C "$REPO" stash list
 ```
@@ -690,10 +717,17 @@ These are known and deliberate in this version, not defects to file.
 - **Local edits to shared pages are lost.** Anything you change under
   `memory/concepts/shared/` is overwritten the next time the content repo has a
   new commit. The repo is the source of truth.
-- **Provenance is unknown for a manual install.** Because you cloned the plugin
-  by hand rather than installing it through the plugin system,
-  `assistant plugins inspect shared-memory` reports unknown provenance and no
-  drift baseline. That is cosmetic.
+- **No provenance for a manual install.** Because you cloned the plugin by hand
+  rather than installing it through the plugin system,
+  `assistant plugins inspect shared-memory` reports:
+
+  ```
+  status      installed (not in marketplace)
+  drift       unknown (no recorded baseline; reinstall to record one)
+  ```
+
+  Both lines are cosmetic here. If the marketplace cannot be reached at all the
+  status line reads `installed (marketplace unavailable)` instead.
 - **No permissioning.** Everything in the content repo reaches every assistant
   that installs the plugin. There is no way to scope a skill or a page to a
   subset of people.
