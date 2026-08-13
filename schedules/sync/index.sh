@@ -6,8 +6,6 @@ DATA="$PLUGIN_DIR/data"
 REPO="$DATA/repo"
 CONFIG="$PLUGIN_DIR/config.json"
 
-mkdir -p "$DATA"
-
 if [ ! -f "$CONFIG" ]; then
   echo "shared-memory: unconfigured, skipping"
   exit 0
@@ -41,14 +39,19 @@ if [ -d "$REPO/.git" ]; then
   fi
 
   if [ "$repo_ok" = "0" ]; then
-    # The clone is shared with the outbound half, so throwing it away is gated on
-    # everything in it already being on the remote. Every check has to answer
-    # yes, and a check that cannot answer counts as a no.
+    # The clone is shared with the outbound half, so throwing it away is gated
+    # on four checks: the checked out branch tracks an upstream and is not ahead
+    # of it, no local branch holds a commit the remote does not have, the stash
+    # is empty, and the tree is clean. Every check has to answer yes, and a
+    # check that cannot answer counts as a no.
     safe=0
     if git -C "$REPO" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1 &&
       UNPUSHED="$(git -C "$REPO" rev-list '@{upstream}..HEAD')" &&
+      LOCAL_ONLY="$(git -C "$REPO" log --branches --not --remotes --format=%H)" &&
+      STASHED="$(git -C "$REPO" stash list)" &&
       DIRTY="$(git -C "$REPO" status --porcelain)" &&
-      [ -z "$UNPUSHED" ] && [ -z "$DIRTY" ]; then
+      [ -z "$UNPUSHED" ] && [ -z "$LOCAL_ONLY" ] && [ -z "$STASHED" ] &&
+      [ -z "$DIRTY" ]; then
       safe=1
     fi
 
