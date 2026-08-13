@@ -1,0 +1,8 @@
+# data/ holds the content-repo clone and sync state, and skills is a symlink
+# into it. Both are runtime artifacts of a deployed install and must never be
+# committed to the plugin repo.
+data/
+/skills
+
+node_modules/
+*.log

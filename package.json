@@ -1,0 +1,13 @@
+{
+  "name": "shared-memory",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "peerDependencies": {
+    "@vellumai/plugin-api": "^0.11.0"
+  },
+  "devDependencies": {
+    "@vellumai/plugin-api": "file:../vellum-assistant/assistant/src/plugin-api"
+  },
+  "vellum": {}
+}
