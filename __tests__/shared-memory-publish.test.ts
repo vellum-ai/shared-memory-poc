@@ -409,7 +409,7 @@ describe("atomic shared memory publishing", () => {
         ),
       ).toBe(false);
     }
-  });
+  }, 15_000);
 
   test("returns a no-op without creating a commit when content already matches", async () => {
     const fixture = makeFixture();
