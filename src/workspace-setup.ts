@@ -6,6 +6,7 @@
  * Everything here is synchronous, node-stdlib only, and safe to re-run.
  */
 
+import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
   lstatSync,
@@ -20,6 +21,8 @@ import { join } from "node:path";
 
 export type GitExcludeResult = "added" | "present" | "no-repo";
 
+export type UntrackResult = "untracked" | "not-tracked" | "no-repo" | "failed";
+
 export type SkillsSymlinkResult = "created" | "ok" | "repaired" | "conflict";
 
 /** Relative target of `<pluginDir>/skills`, resolved against the plugin dir. */
@@ -27,6 +30,29 @@ export const SKILLS_LINK_TARGET = "data/repo/skills";
 
 function errorCode(error: unknown): string | undefined {
   return (error as { code?: string } | null)?.code;
+}
+
+/** Whether the workspace keeps its own repo, as opposed to none or a worktree file. */
+function hasGitDir(workspaceRoot: string): boolean {
+  try {
+    return statSync(join(workspaceRoot, ".git")).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** Runs git in `cwd` and reports whether it succeeded, never throwing. */
+function runGit(
+  cwd: string,
+  args: string[],
+): { ok: boolean; stdout: string } {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error || result.status !== 0) return { ok: false, stdout: "" };
+  return { ok: true, stdout: result.stdout ?? "" };
 }
 
 /**
@@ -39,14 +65,9 @@ export function ensureGitExclude(
   workspaceRoot: string,
   line: string,
 ): GitExcludeResult {
-  const gitDir = join(workspaceRoot, ".git");
-  try {
-    if (!statSync(gitDir).isDirectory()) return "no-repo";
-  } catch {
-    return "no-repo";
-  }
+  if (!hasGitDir(workspaceRoot)) return "no-repo";
 
-  const excludePath = join(gitDir, "info", "exclude");
+  const excludePath = join(workspaceRoot, ".git", "info", "exclude");
   let existing = "";
   try {
     existing = readFileSync(excludePath, "utf8");
@@ -56,10 +77,42 @@ export function ensureGitExclude(
 
   if (existing.split("\n").includes(line)) return "present";
 
-  mkdirSync(join(gitDir, "info"), { recursive: true });
+  mkdirSync(join(workspaceRoot, ".git", "info"), { recursive: true });
   const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
   appendFileSync(excludePath, `${separator}${line}\n`);
   return "added";
+}
+
+/**
+ * Drop `<workspaceRoot>/<relPath>` from the workspace's index, leaving the
+ * files on disk.
+ *
+ * An exclude line only hides untracked paths. A workspace whose daemon ran
+ * `git add -A` before this plugin's first boot already has the install
+ * committed, usually as a gitlink, and would re-dirty on every plugin update
+ * until that entry leaves the index. Removing it stages a deletion the
+ * daemon's next commit picks up.
+ */
+export function untrackPluginPath(
+  workspaceRoot: string,
+  relPath: string,
+): UntrackResult {
+  if (!hasGitDir(workspaceRoot)) return "no-repo";
+
+  const listed = runGit(workspaceRoot, ["ls-files", "--", relPath]);
+  if (!listed.ok) return "failed";
+  if (listed.stdout.trim().length === 0) return "not-tracked";
+
+  const removed = runGit(workspaceRoot, [
+    "rm",
+    "-r",
+    "-q",
+    "--cached",
+    "--ignore-unmatch",
+    "--",
+    relPath,
+  ]);
+  return removed.ok ? "untracked" : "failed";
 }
 
 /**

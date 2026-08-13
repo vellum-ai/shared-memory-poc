@@ -13,14 +13,18 @@ import type { InitContext } from "@vellumai/plugin-api";
 import {
   ensureGitExclude,
   ensureSkillsSymlink,
+  untrackPluginPath,
 } from "../src/workspace-setup.js";
+
+/** Where the assistant installs this plugin, relative to the workspace root. */
+const PLUGIN_REL_PATH = "plugins/shared-memory";
 
 /**
  * The install is a git clone, so the plugin directory carries its own `.git`.
  * Excluding the whole directory keeps that nested repo out of the workspace's
  * history; excluding only `data/` would leave a gitlink behind instead.
  */
-const EXCLUDE_LINE = "/plugins/shared-memory/";
+const EXCLUDE_LINE = `/${PLUGIN_REL_PATH}/`;
 
 export default async function init(ctx: InitContext): Promise<void> {
   try {
@@ -32,6 +36,20 @@ export default async function init(ctx: InitContext): Promise<void> {
       { workspaceRoot, result: exclude },
       "Checked the workspace git exclude for the plugin directory",
     );
+
+    // The exclude goes first so nothing can re-add the path in between.
+    const untrack = untrackPluginPath(workspaceRoot, PLUGIN_REL_PATH);
+    if (untrack === "failed") {
+      ctx.logger.warn(
+        { workspaceRoot },
+        "Could not drop the plugin directory from the workspace's git index, so the workspace will keep reporting it as changed",
+      );
+    } else {
+      ctx.logger.info(
+        { workspaceRoot, result: untrack },
+        "Checked whether the workspace's git index still tracks the plugin directory",
+      );
+    }
 
     const link = ensureSkillsSymlink(pluginDir);
     if (link === "conflict") {
