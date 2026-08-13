@@ -1,7 +1,7 @@
 /**
- * Filesystem preparation for a deployed install: keep the runtime `data/`
- * directory out of the workspace's git history, and point the assistant's
- * skill catalog at the content-repo clone.
+ * Filesystem preparation for a deployed install: keep the plugin directory
+ * out of the workspace's git history, and point the assistant's skill catalog
+ * at the content-repo clone.
  *
  * Everything here is synchronous, node-stdlib only, and safe to re-run.
  */
@@ -76,7 +76,6 @@ export function ensureSkillsSymlink(pluginDir: string): SkillsSymlinkResult {
     entry = lstatSync(linkPath);
   } catch (error) {
     if (errorCode(error) !== "ENOENT") throw error;
-    mkdirSync(pluginDir, { recursive: true });
     symlinkSync(SKILLS_LINK_TARGET, linkPath);
     return "created";
   }

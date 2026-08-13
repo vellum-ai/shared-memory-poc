@@ -21,7 +21,7 @@ import {
   SKILLS_LINK_TARGET,
 } from "../src/workspace-setup.js";
 
-const EXCLUDE_LINE = "/plugins/shared-memory/data/";
+const EXCLUDE_LINE = "/plugins/shared-memory/";
 
 const workspaces: string[] = [];
 
@@ -167,12 +167,10 @@ describe("ensureSkillsSymlink", () => {
 describe("init hook", () => {
   test("prepares the workspace and is a no-op on the second boot", async () => {
     const { pluginDir, storageDir, excludePath } = makeWorkspace();
-    rmSync(storageDir, { recursive: true });
     const first = makeContext(storageDir);
 
     await init(first.ctx);
 
-    expect(lstatSync(storageDir).isDirectory()).toBe(true);
     expect(readFileSync(excludePath, "utf8")).toBe(`${EXCLUDE_LINE}\n`);
     expect(readlinkSync(join(pluginDir, "skills"))).toBe(SKILLS_LINK_TARGET);
     expect(first.calls.map((call) => call.level)).toEqual(["info", "info"]);
@@ -217,19 +215,5 @@ describe("init hook", () => {
 
     expect(calls.map((call) => call.level)).toEqual(["error"]);
     expect(() => lstatSync(join(pluginDir, "skills"))).toThrow();
-  });
-
-  test("logs and returns when the plugin directory cannot be created", async () => {
-    const root = mkdtempSync(join(tmpdir(), "shared-memory-"));
-    workspaces.push(root);
-    const blocked = join(root, "blocked");
-    writeFileSync(blocked, "a file where the workspace should be\n");
-    const storageDir = join(blocked, "plugins", "shared-memory", "data");
-    const { calls, ctx } = makeContext(storageDir);
-
-    await init(ctx);
-
-    expect(calls.map((call) => call.level)).toEqual(["error"]);
-    expect(existsSync(storageDir)).toBe(false);
   });
 });

@@ -4,5 +4,8 @@
 data/
 /skills
 
+# Per-install config of a deployed clone; config.example.json is the template.
+/config.json
+
 node_modules/
 *.log
