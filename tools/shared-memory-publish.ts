@@ -7,6 +7,7 @@ import type {
 
 import { ConceptPathError, MAX_CONCEPT_FILE_BYTES, MAX_EXACT_PATHS } from "../src/concept-path.js";
 import {
+  GIT_OBJECT_ID_PATTERN,
   MAX_COMMIT_MESSAGE_BYTES,
   parsePublishProposal,
   publishSharedMemory,
@@ -76,7 +77,7 @@ const tool = {
     properties: {
       expectedHead: {
         type: "string",
-        pattern: "^[0-9a-f]{40}$",
+        pattern: GIT_OBJECT_ID_PATTERN,
         description: "Exact expectedHead returned by the required inspection.",
       },
       expectedPolicyFingerprint: {

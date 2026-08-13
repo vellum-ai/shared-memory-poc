@@ -23,8 +23,10 @@ import {
 } from "./shared-memory-repository.js";
 
 export const MAX_COMMIT_MESSAGE_BYTES = 120;
+export const GIT_OBJECT_ID_PATTERN = "^(?:[0-9a-f]{40}|[0-9a-f]{64})$";
 
 const PUSH_FOLLOWUP_TIMEOUT_MS = 30_000;
+const GIT_OBJECT_ID = new RegExp(GIT_OBJECT_ID_PATTERN);
 
 export interface SharedMemoryUpsert {
   path: string;
@@ -111,10 +113,10 @@ export function parsePublishProposal(input: Record<string, unknown>): SharedMemo
       "Provide only expectedHead, expectedPolicyFingerprint, commitMessage, and upserts.",
     );
   }
-  if (typeof input.expectedHead !== "string" || !/^[0-9a-f]{40}$/.test(input.expectedHead)) {
+  if (typeof input.expectedHead !== "string" || !GIT_OBJECT_ID.test(input.expectedHead)) {
     throw new SharedMemoryPublishError(
       "INVALID_INPUT",
-      "expectedHead must be the 40-character commit from shared_memory_inspect.",
+      "expectedHead must be the complete commit object ID from shared_memory_inspect.",
     );
   }
   if (

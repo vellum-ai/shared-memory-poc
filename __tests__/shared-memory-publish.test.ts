@@ -96,13 +96,19 @@ function cloneInstall(
   return { pluginDir, checkout, watermark };
 }
 
-function makeFixture(options: { branch?: string; sharingGuidance?: string } = {}): Fixture {
+function makeFixture(
+  options: {
+    branch?: string;
+    objectFormat?: "sha1" | "sha256";
+    sharingGuidance?: string;
+  } = {},
+): Fixture {
   const root = mkdtempSync(join(tmpdir(), "shared-memory-publish-"));
   roots.push(root);
   const branch = options.branch ?? "main";
 
   const seed = join(root, "seed");
-  initRepo(seed);
+  initRepo(seed, options.objectFormat);
   if (branch !== "main") {
     runGit(seed, ["checkout", "-q", "-b", branch]);
   }
@@ -296,6 +302,26 @@ describe("atomic shared memory publishing", () => {
     expect(runGit(fixture.checkout, ["rev-parse", "HEAD"]).trim()).toBe(commitSha);
     await expect(Bun.file(fixture.watermark).text()).resolves.toBe("ingested-head\n");
     expect(readdirSync(join(fixture.pluginDir, "data")).some((name) => name.startsWith("publish-index."))).toBe(false);
+  });
+
+  test("publishes from a SHA-256 repository using the inspected object ID", async () => {
+    const fixture = makeFixture({ objectFormat: "sha256" });
+    expect(fixture.expectedHead).toMatch(/^[0-9a-f]{64}$/);
+
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        {
+          path: "concepts/deploy-runbook.md",
+          content: `${DEPLOY_CONTENT}\nSHA-256 update.\n`,
+        },
+      ]),
+    );
+
+    expect(result.reply.isError).toBe(false);
+    expect(result.body.previousHead).toBe(fixture.expectedHead);
+    expect(result.body.commitSha).toMatch(/^[0-9a-f]{64}$/);
+    expect(remoteHead(fixture)).toBe(result.body.commitSha as string);
   });
 
   test("returns a no-op without creating a commit when content already matches", async () => {
