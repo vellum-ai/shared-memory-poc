@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -13,15 +14,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import init from "../hooks/init.js";
 import {
   ensureGitExclude,
   ensureSkillsSymlink,
   SKILLS_LINK_TARGET,
+  untrackPluginPath,
 } from "../src/workspace-setup.js";
 
-const EXCLUDE_LINE = "/plugins/shared-memory/";
+const PLUGIN_REL_PATH = "plugins/shared-memory";
+const EXCLUDE_LINE = `/${PLUGIN_REL_PATH}/`;
 
 const workspaces: string[] = [];
 
@@ -31,14 +35,52 @@ afterEach(() => {
   }
 });
 
+function runGit(cwd: string, args: string[]): string {
+  // stderr is captured so the hints git prints about embedded repos, and the
+  // commands a test fails on purpose, stay out of the test output.
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function identify(repo: string): void {
+  runGit(repo, ["config", "user.name", "Fixture"]);
+  runGit(repo, ["config", "user.email", "fixture@example.com"]);
+  runGit(repo, ["config", "commit.gpgsign", "false"]);
+}
+
+function initRepo(root: string): void {
+  runGit(root, ["init", "-q", "-b", "main"]);
+  identify(root);
+  // git's own template exclude file would blur the assertions about what the
+  // hook writes into the exclude.
+  rmSync(join(root, ".git", "info", "exclude"), { force: true });
+}
+
+/** Commits everything in the workspace the way its daemon's `git add -A` would. */
+function autoCommit(root: string): void {
+  runGit(root, ["add", "-A"]);
+  runGit(root, ["commit", "-q", "-m", "workspace auto-commit"]);
+}
+
+function trackedPaths(root: string, relPath: string): string {
+  return runGit(root, ["ls-files", "--", relPath]).trim();
+}
+
+function stagedChanges(root: string): string {
+  return runGit(root, ["diff", "--cached", "--name-status"]).trim();
+}
+
 /** A workspace laid out the way a deployed install finds it. */
 function makeWorkspace({ git = true }: { git?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "shared-memory-"));
   workspaces.push(root);
-  const pluginDir = join(root, "plugins", "shared-memory");
+  const pluginDir = join(root, PLUGIN_REL_PATH);
   const storageDir = join(pluginDir, "data");
   mkdirSync(storageDir, { recursive: true });
-  if (git) mkdirSync(join(root, ".git"), { recursive: true });
+  if (git) initRepo(root);
   return { root, pluginDir, storageDir, excludePath: join(root, ".git", "info", "exclude") };
 }
 
@@ -118,6 +160,74 @@ describe("ensureGitExclude", () => {
   });
 });
 
+describe("untrackPluginPath", () => {
+  test("drops committed files under the path and keeps them on disk", () => {
+    const { root } = makeWorkspace();
+    const state = join(root, PLUGIN_REL_PATH, "data", "state.json");
+    writeFileSync(state, "{}\n");
+    writeFileSync(join(root, "README.md"), "# workspace\n");
+    autoCommit(root);
+    expect(trackedPaths(root, PLUGIN_REL_PATH)).toBe(`${PLUGIN_REL_PATH}/data/state.json`);
+
+    expect(untrackPluginPath(root, PLUGIN_REL_PATH)).toBe("untracked");
+
+    expect(trackedPaths(root, PLUGIN_REL_PATH)).toBe("");
+    expect(stagedChanges(root)).toBe(`D\t${PLUGIN_REL_PATH}/data/state.json`);
+    expect(existsSync(state)).toBe(true);
+    expect(trackedPaths(root, "README.md")).toBe("README.md");
+
+    expect(untrackPluginPath(root, PLUGIN_REL_PATH)).toBe("not-tracked");
+  });
+
+  test("reports not-tracked and stages nothing when the path was never committed", () => {
+    const { root } = makeWorkspace();
+    writeFileSync(join(root, "README.md"), "# workspace\n");
+    runGit(root, ["add", "README.md"]);
+    runGit(root, ["commit", "-q", "-m", "seed"]);
+
+    expect(untrackPluginPath(root, PLUGIN_REL_PATH)).toBe("not-tracked");
+    expect(stagedChanges(root)).toBe("");
+  });
+
+  test("reports no-repo when the workspace has no .git", () => {
+    const { root } = makeWorkspace({ git: false });
+
+    expect(untrackPluginPath(root, PLUGIN_REL_PATH)).toBe("no-repo");
+  });
+
+  test("reports no-repo when .git is a file rather than a directory", () => {
+    const { root } = makeWorkspace({ git: false });
+    writeFileSync(join(root, ".git"), "gitdir: /elsewhere/.git/worktrees/w\n");
+
+    expect(untrackPluginPath(root, PLUGIN_REL_PATH)).toBe("no-repo");
+  });
+
+  test("reports failed when .git is a directory but not a usable repo", () => {
+    const { root } = makeWorkspace({ git: false });
+    mkdirSync(join(root, ".git"));
+
+    expect(untrackPluginPath(root, PLUGIN_REL_PATH)).toBe("failed");
+  });
+
+  test("reports failed instead of throwing when git is missing from PATH", () => {
+    const { root } = makeWorkspace();
+    const module = fileURLToPath(new URL("../src/workspace-setup.ts", import.meta.url));
+    const program = [
+      `const { untrackPluginPath } = await import(${JSON.stringify(module)});`,
+      `console.log(untrackPluginPath(${JSON.stringify(root)}, ${JSON.stringify(PLUGIN_REL_PATH)}));`,
+    ].join("\n");
+
+    const result = Bun.spawnSync([process.execPath, "-e", program], {
+      env: { PATH: join(root, "no-such-bin"), HOME: process.env.HOME ?? "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString().trim()).toBe("failed");
+  });
+});
+
 describe("ensureSkillsSymlink", () => {
   test("creates a relative link even though the clone does not exist yet", () => {
     const { pluginDir } = makeWorkspace();
@@ -173,7 +283,7 @@ describe("init hook", () => {
 
     expect(readFileSync(excludePath, "utf8")).toBe(`${EXCLUDE_LINE}\n`);
     expect(readlinkSync(join(pluginDir, "skills"))).toBe(SKILLS_LINK_TARGET);
-    expect(first.calls.map((call) => call.level)).toEqual(["info", "info"]);
+    expect(first.calls.map((call) => call.level)).toEqual(["info", "info", "info"]);
 
     const second = makeContext(storageDir);
     await init(second.ctx);
@@ -182,8 +292,42 @@ describe("init hook", () => {
     expect(readlinkSync(join(pluginDir, "skills"))).toBe(SKILLS_LINK_TARGET);
     expect(second.calls.map((call) => call.obj)).toEqual([
       expect.objectContaining({ result: "present" }),
+      expect.objectContaining({ result: "not-tracked" }),
       expect.objectContaining({ result: "ok" }),
     ]);
+  });
+
+  test("untracks a plugin directory the workspace committed as a gitlink", async () => {
+    const { root, pluginDir, storageDir } = makeWorkspace();
+    initRepo(pluginDir);
+    writeFileSync(join(pluginDir, "package.json"), "{}\n");
+    runGit(pluginDir, ["add", "-A"]);
+    runGit(pluginDir, ["commit", "-q", "-m", "install the plugin"]);
+    autoCommit(root);
+    expect(runGit(root, ["ls-files", "-s", "--", PLUGIN_REL_PATH])).toMatch(/^160000 /);
+
+    const { calls, ctx } = makeContext(storageDir);
+    await init(ctx);
+
+    expect(trackedPaths(root, PLUGIN_REL_PATH)).toBe("");
+    expect(stagedChanges(root)).toBe(`D\t${PLUGIN_REL_PATH}`);
+    expect(calls.map((call) => call.obj)).toEqual([
+      expect.objectContaining({ result: "added" }),
+      expect.objectContaining({ result: "untracked" }),
+      expect.objectContaining({ result: "created" }),
+    ]);
+  });
+
+  test("warns without failing when the workspace index cannot be read", async () => {
+    const { root, pluginDir, storageDir } = makeWorkspace({ git: false });
+    mkdirSync(join(root, ".git"));
+    const { calls, ctx } = makeContext(storageDir);
+
+    await init(ctx);
+
+    expect(calls.filter((call) => call.level === "warn")).toHaveLength(1);
+    expect(calls.some((call) => call.level === "error")).toBe(false);
+    expect(readlinkSync(join(pluginDir, "skills"))).toBe(SKILLS_LINK_TARGET);
   });
 
   test("warns instead of failing when a real skills directory is in the way", async () => {
