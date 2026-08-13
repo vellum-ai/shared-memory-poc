@@ -98,6 +98,10 @@ manual resolution, and tries again on the next tick. The local work stays on
 disk for someone to land or drop, and the assistant keeps running on the content
 it already has.
 
+A clone whose HEAD resolves to no commit never finished cloning and so cannot
+hold outbound work, and sync deletes and re-clones that one too as long as it has
+no uncommitted changes.
+
 ### Failure semantics
 
 The watermark at `data/last-sha` advances once the halves that ran have
