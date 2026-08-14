@@ -120,7 +120,7 @@ vellum sleep --wait 60s
 daemon mid-job. Without a duration it waits as long as it takes.
 
 Installing into a live workspace can get the plugin directory recorded in the
-workspace's own git history. Stopping first closes that window, and step 13
+workspace's own git history. Stopping first closes that window, and step 14
 checks that it stayed closed. See
 [Why the daemon goes down first](../README.md#why-the-daemon-goes-down-first) in
 the README.
@@ -571,7 +571,28 @@ jq '.digest = {"summary": "deterministic"}' "$WS/plugins/shared-memory/config.js
   && mv /tmp/config.json "$WS/plugins/shared-memory/config.json"
 ```
 
-## Step 13 — Verify workspace hygiene
+## Step 13 — Open the knowledge dashboard
+
+The plugin bundles an app. Check it is listed:
+
+```bash
+assistant apps list
+```
+
+Expect a row for `plugins~shared-memory~knowledge` with the origin
+`plugin:shared-memory`. Open the Library tab in the web or desktop app and
+open **knowledge**. Expect the Overview tab to show the fixture repo's URL and
+branch, the counts from steps 8 and 9, the author block from the identity
+step, and a pending-digest card consistent with what step 12 reported. The
+Contributors tab should chart the commits you made, attributed to the authors
+you committed as.
+
+The monitor process builds the app bundle a couple of seconds after the
+plugin lands or changes; if the Library shows the app but opening it fails,
+give it a moment and reopen. The app polls, so a sync that lands while it is
+open shows up within a minute.
+
+## Step 14 — Verify workspace hygiene
 
 The plugin, the clone and the watermark all live in the workspace, but none of
 them may show up as workspace changes.

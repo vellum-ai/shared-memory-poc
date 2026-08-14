@@ -269,6 +269,31 @@ retries the same range on the next tick. The notification carries a dedupe key
 made from that range, so the router drops the duplicate and the user is
 notified once.
 
+## Knowledge dashboard
+
+The plugin bundles an app that shows the shared knowledge store at a glance.
+It appears in the Library tab as `knowledge` (app id
+`plugins~shared-memory~knowledge`) once the plugin is installed; no flag gates
+it, and the assistant's monitor process builds it from `apps/knowledge/src`
+on its own.
+
+Four tabs:
+
+- **Overview** — the connected knowledge base: repo, branch, sync freshness,
+  skill and page counts, the publishing identity, digest mode, and a pending
+  digest card showing what the next digest will report.
+- **Contributors** — updates over time per contributor: weekly stacked bars, a
+  cumulative line, and a leaderboard, over a selectable window.
+- **Activity** — the commit feed with each commit's skill and page changes.
+- **Browse** — search across concept pages and read them in place.
+
+The app reads through the plugin's own HTTP routes under
+`/x/plugins/shared-memory/knowledge/`, which serve the local clone read-only:
+no locks taken, no network touched, attribution rules identical to the
+digest's. The API models knowledge bases as a list even though `config.json`
+configures exactly one today, so a future multi-repo install is an additive
+change.
+
 ## Publishing identity
 
 Every commit records both the person responsible for the publication and the

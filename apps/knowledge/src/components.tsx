@@ -1,0 +1,119 @@
+import type { ReactNode } from "react";
+
+import type { ChangeAction, CommitChange } from "./api";
+import { ACTION_SIGN, pathLabel } from "./format";
+
+/**
+ * Non-blocking failure notice. The surrounding view keeps whatever data it
+ * already had, so this reports staleness rather than replacing content.
+ */
+export function ErrorBanner({
+  message,
+  onRetry,
+}: {
+  message: string | null;
+  onRetry?: () => void;
+}) {
+  if (!message) return null;
+  return (
+    <div class="banner" role="status">
+      <svg class="banner-icon" viewBox="0 0 16 16" aria-hidden="true">
+        <path
+          d="M8 1.6 15 14H1L8 1.6Z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linejoin="round"
+        />
+        <path d="M8 6v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        <circle cx="8" cy="12" r="0.9" fill="currentColor" />
+      </svg>
+      <span class="banner-text">{message}</span>
+      {onRetry ? (
+        <button class="banner-action" type="button" onClick={onRetry}>
+          Retry
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** Placeholder bars shown while a first load is in flight. */
+export function Skeleton({ lines = 3, class: extra }: { lines?: number; class?: string }) {
+  return (
+    <div class={extra ? `skeleton ${extra}` : "skeleton"} aria-hidden="true">
+      {Array.from({ length: lines }, (_, index) => (
+        <div class="skeleton-line" key={index} style={{ width: `${100 - index * 12}%` }} />
+      ))}
+    </div>
+  );
+}
+
+export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
+  return (
+    <div class="empty">
+      <p class="empty-title">{title}</p>
+      {children ? <div class="empty-body">{children}</div> : null}
+    </div>
+  );
+}
+
+export function Card({
+  title,
+  actions,
+  children,
+  class: extra,
+}: {
+  title?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+  class?: string;
+}) {
+  return (
+    <section class={extra ? `card ${extra}` : "card"}>
+      {title !== undefined ? (
+        <header class="card-head">
+          <h2 class="card-title">{title}</h2>
+          {actions ? <div class="card-actions">{actions}</div> : null}
+        </header>
+      ) : null}
+      <div class="card-body">{children}</div>
+    </section>
+  );
+}
+
+export function Stat({ label, value, tone }: { label: string; value: ReactNode; tone?: "warn" }) {
+  return (
+    <div class={tone === "warn" ? "stat stat-warn" : "stat"}>
+      <span class="stat-label">{label}</span>
+      <span class="stat-value">{value}</span>
+    </div>
+  );
+}
+
+/** `+ skill deploy`, `~ page team/oncall`, `− skill legacy`. */
+export function ChangeChip({ change }: { change: CommitChange }) {
+  return (
+    <span class={`chip chip-${change.action}`} title={`${change.action} ${change.kind}`}>
+      <span class="chip-sign">{ACTION_SIGN[change.action]}</span>
+      <span class="chip-kind">{change.kind}</span>
+      <span class="chip-name">{change.name}</span>
+    </span>
+  );
+}
+
+export function NameChip({
+  action,
+  kind,
+  name,
+}: {
+  action: ChangeAction;
+  kind: "skill" | "page";
+  name: string;
+}) {
+  return <ChangeChip change={{ action, kind, name }} />;
+}
+
+export function PathChip({ path }: { path: string }) {
+  return <span class="path-chip" title={path}>{pathLabel(path)}</span>;
+}
