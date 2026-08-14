@@ -148,7 +148,8 @@ const tool = {
                   type: "string",
                   minLength: 1,
                   maxLength: MAX_CONCEPT_FILE_BYTES,
-                  description: "Markdown body without frontmatter or the page title heading.",
+                  description:
+                    "Markdown body. Existing frontmatter and a leading H1 are removed before the canonical page is rendered.",
                 },
               },
             },

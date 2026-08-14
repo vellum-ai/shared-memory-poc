@@ -101,11 +101,36 @@ function parseYamlString(value: string, label: string): string {
   fail(`${label} must be a valid YAML string.`);
 }
 
+function unwrapConceptBody(value: string, title: string): string {
+  let lines = value.replace(/\r\n?/g, "\n").trim().split("\n");
+  let removedFrontmatter = false;
+  if (lines[0] === "---") {
+    const frontmatterEnd = lines.indexOf("---", 1);
+    if (frontmatterEnd !== -1) {
+      lines = lines.slice(frontmatterEnd + 1);
+      removedFrontmatter = true;
+    }
+  }
+  while (lines[0]?.trim() === "") {
+    lines.shift();
+  }
+  if (
+    (removedFrontmatter && /^#\s+\S/.test(lines[0] ?? "")) ||
+    lines[0] === `# ${title}`
+  ) {
+    lines.shift();
+  }
+  while (lines[0]?.trim() === "") {
+    lines.shift();
+  }
+  return lines.join("\n").trim();
+}
+
 export function formatConceptPage(fields: ConceptPageFields): string {
   const title = normalizeInline(fields.title, "Title", MAX_CONCEPT_TITLE_LENGTH);
   const summary = normalizeInline(fields.summary, "Summary", MAX_CONCEPT_SUMMARY_LENGTH);
   const tags = normalizeTags(fields.tags);
-  const body = fields.body.replace(/\r\n?/g, "\n").trim();
+  const body = unwrapConceptBody(fields.body, title);
   if (body.length === 0 || body.includes("\0")) {
     fail("The page body must contain non-empty Markdown text.");
   }

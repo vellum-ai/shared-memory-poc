@@ -62,6 +62,30 @@ describe("canonical concept page format", () => {
     expect(() => validateConceptPageFormat(content)).not.toThrow();
   });
 
+  test("unwraps a complete page supplied as the structured body", () => {
+    const content = formatConceptPage({
+      title: "Horses",
+      summary: "A few reliable facts about horse anatomy and behavior.",
+      tags: ["animals"],
+      body: HORSES,
+    });
+
+    expect(content).toBe(HORSES);
+    expect(content.match(/^---$/gm)).toHaveLength(2);
+    expect(content.match(/^# Horses$/gm)).toHaveLength(1);
+  });
+
+  test("preserves body content that only resembles a heading", () => {
+    const content = formatConceptPage({
+      title: "Release commands",
+      summary: "Commands used during a release.",
+      tags: ["release"],
+      body: "# tag the release\ngit tag v1",
+    });
+
+    expect(content).toContain("# Release commands\n\n# tag the release\ngit tag v1");
+  });
+
   test("rejects pages that depart from the canonical structure", () => {
     const invalidPages = [
       HORSES.replace("summary: A few reliable facts about horse anatomy and behavior.\n", ""),
