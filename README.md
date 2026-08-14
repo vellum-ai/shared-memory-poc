@@ -33,7 +33,7 @@ only sign of it is a warning naming the slug. The other pages import as usual,
 so a file named this way can sit there being skipped indefinitely. Name it
 `concepts/team-oncall.md` instead.
 
-Required format:
+Preferred generated format:
 
 ```yaml
 ---
@@ -48,12 +48,13 @@ source: import:shared-repo
 The pager rotates every Monday.
 ```
 
-The fields must appear in that order. `title` and `summary` are non-empty
-text, `tags` is a non-empty inline list of unique lowercase slugs, and
-`source` is exactly `import:shared-repo`. The Markdown body starts with one H1
-that exactly matches `title`, followed by non-empty durable shared knowledge.
-The publish tool rejects upserts that do not follow this format, including
-content changed into a non-canonical form by repository Git filters.
+For structured upserts, the publish tool renders these fields in this order.
+`title` and `summary` are non-empty text, tags are normalized to unique
+lowercase slugs, and `source` is set to `import:shared-repo`. The Markdown body
+starts with an H1 that exactly matches `title`, followed by non-empty durable
+shared knowledge. Legacy complete-content upserts remain accepted for
+compatibility. If repository Git filters corrupt a generated page, publication
+stops before pushing it.
 
 ### Names to avoid
 

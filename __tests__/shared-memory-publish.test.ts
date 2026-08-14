@@ -32,6 +32,16 @@ function conceptPage(
   return `---\ntitle: ${title}\nsummary: ${summary}\ntags: [${tags.join(", ")}]\nsource: import:shared-repo\n---\n\n# ${title}\n\n${body.trim()}\n`;
 }
 
+function structuredConceptPage(
+  path: string,
+  title: string,
+  summary: string,
+  tags: string[],
+  body: string,
+): Record<string, unknown> {
+  return { path, title, summary, tags, body };
+}
+
 const DEPLOY_CONTENT = conceptPage(
   "Deploy runbook",
   "How the team ships a release.",
@@ -172,7 +182,7 @@ async function publish(
 
 function proposal(
   expectedHead: string,
-  upserts: Array<{ path: string; content: string }>,
+  upserts: Array<Record<string, unknown>>,
   expectedPolicyFingerprint = policyFingerprint(),
 ): Record<string, unknown> {
   return {
@@ -269,27 +279,39 @@ describe("shared_memory_publish tool contract", () => {
     expect(publishTool.description).toContain("relationship");
     expect(publishTool.description).toContain("identifiable person");
     expect(publishTool.description).toContain("Deletions are not supported");
-    expect(publishTool.description).toContain("source must be import:shared-repo");
+    expect(publishTool.description).toContain("publisher renders the canonical template");
+    expect(JSON.stringify(publishTool.input_schema)).toContain('"oneOf"');
+    expect(JSON.stringify(publishTool.input_schema)).toContain('"title"');
+    expect(JSON.stringify(publishTool.input_schema)).toContain('"content"');
   });
 });
 
 describe("atomic shared memory publishing", () => {
   test("publishes multiple upserts as one commit and leaves the watermark unchanged", async () => {
     const fixture = makeFixture({ branch: "knowledge" });
-    const updatedDeploy = `${DEPLOY_CONTENT}\nRollback through the same checklist.\n`;
+    const updatedDeploy = conceptPage(
+      "Deploy runbook",
+      "How the team ships a release.",
+      ["ops", "release"],
+      "Use the release checklist.\n\nRollback through the same checklist.",
+    );
     const result = await publish(
       fixture,
       proposal(fixture.expectedHead, [
-        { path: "concepts/deploy-runbook.md", content: updatedDeploy },
-        {
-          path: "concepts/architecture/event-routing.md",
-          content: conceptPage(
-            "Event routing",
-            "How invalidations move through the system.",
-            ["architecture"],
-            "Route invalidations through the gateway.",
-          ),
-        },
+        structuredConceptPage(
+          "concepts/deploy-runbook.md",
+          "Deploy runbook",
+          "How the team ships a release.",
+          ["Ops", "release", "ops"],
+          "Use the release checklist.\n\nRollback through the same checklist.",
+        ),
+        structuredConceptPage(
+          "concepts/architecture/event-routing.md",
+          "Event routing",
+          "How invalidations move through the system.",
+          ["architecture"],
+          "Route invalidations through the gateway.",
+        ),
       ]),
     );
 
@@ -489,10 +511,13 @@ describe("atomic shared memory publishing", () => {
       const result = await publish(
         fixture,
         proposal(attributes.sha, [
-          {
-            path: "concepts/deploy-runbook.md",
-            content: `${DEPLOY_CONTENT}\nFiltered update.\n`,
-          },
+          structuredConceptPage(
+            "concepts/deploy-runbook.md",
+            "Deploy runbook",
+            "How the team ships a release.",
+            ["ops", "release"],
+            "Use the release checklist.\n\nFiltered update.",
+          ),
         ]),
       );
 
@@ -949,21 +974,21 @@ describe("atomic shared memory publishing", () => {
     expect(remoteHead(fixture)).toBe(fixture.expectedHead);
   });
 
-  test("rejects non-canonical concept pages before publication", async () => {
+  test("accepts legacy non-canonical pages for compatibility", async () => {
     const fixture = makeFixture();
+    const legacyContent = "# Deploy runbook\n\nLegacy Markdown remains publishable.\n";
     const result = await publish(
       fixture,
       proposal(fixture.expectedHead, [
         {
           path: "concepts/deploy-runbook.md",
-          content: "---\ntitle: Deploy runbook\n---\n\n# Deploy runbook\n\nMissing metadata.\n",
+          content: legacyContent,
         },
       ]),
     );
 
-    expect(result.reply.isError).toBe(true);
-    expect(errorCode(result.body)).toBe("INVALID_CONCEPT_FORMAT");
-    expect(remoteHead(fixture)).toBe(fixture.expectedHead);
+    expect(result.reply.isError).toBe(false);
+    expect(remoteFile(fixture, "concepts/deploy-runbook.md")).toBe(legacyContent);
   });
 
   test("rejects an existing symlink path", async () => {

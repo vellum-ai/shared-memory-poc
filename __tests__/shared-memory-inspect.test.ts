@@ -123,7 +123,7 @@ describe("shared_memory_inspect tool contract", () => {
     expect(String(inspectTool.defaultRiskLevel)).toBe("low");
     expect(inspectTool.description).toContain("durable");
     expect(inspectTool.description).toContain("non-personal");
-    expect(inspectTool.description).toContain("source must be import:shared-repo");
+    expect(inspectTool.description).toContain("source is import:shared-repo");
 
     const schema = inspectTool.input_schema as Record<string, unknown>;
     expect(schema.oneOf).toBeArray();
