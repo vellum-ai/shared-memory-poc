@@ -50,6 +50,18 @@ describe("canonical concept page format", () => {
     expect(() => validateConceptPageFormat(content)).not.toThrow();
   });
 
+  test("quotes tags that YAML would type as non-strings", () => {
+    const content = formatConceptPage({
+      title: "Release labels",
+      summary: "Tags used to group release knowledge.",
+      tags: ["2026", "true", "null", "release-2026"],
+      body: "Use the labels when organizing release pages.",
+    });
+
+    expect(content).toContain('tags: ["2026", "true", "null", release-2026]');
+    expect(() => validateConceptPageFormat(content)).not.toThrow();
+  });
+
   test("rejects pages that depart from the canonical structure", () => {
     const invalidPages = [
       HORSES.replace("summary: A few reliable facts about horse anatomy and behavior.\n", ""),

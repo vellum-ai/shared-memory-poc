@@ -85,7 +85,7 @@ function formatYamlString(value: string): string {
   return JSON.stringify(value);
 }
 
-function parseYamlString(value: string): string {
+function parseYamlString(value: string, label: string): string {
   if (SAFE_YAML_PLAIN_SCALAR.test(value) && !YAML_RESERVED_SCALAR.test(value)) {
     return value;
   }
@@ -93,12 +93,12 @@ function parseYamlString(value: string): string {
   try {
     parsed = JSON.parse(value) as unknown;
   } catch {
-    fail("Title and summary must be valid YAML strings.");
+    fail(`${label} must be a valid YAML string.`);
   }
   if (typeof parsed === "string" && parsed.length > 0) {
     return parsed;
   }
-  fail("Title and summary must be valid YAML strings.");
+  fail(`${label} must be a valid YAML string.`);
 }
 
 export function formatConceptPage(fields: ConceptPageFields): string {
@@ -110,7 +110,7 @@ export function formatConceptPage(fields: ConceptPageFields): string {
     fail("The page body must contain non-empty Markdown text.");
   }
 
-  return `---\ntitle: ${formatYamlString(title)}\nsummary: ${formatYamlString(summary)}\ntags: [${tags.join(", ")}]\nsource: ${CONCEPT_PAGE_SOURCE}\n---\n\n# ${title}\n\n${body}\n`;
+  return `---\ntitle: ${formatYamlString(title)}\nsummary: ${formatYamlString(summary)}\ntags: [${tags.map(formatYamlString).join(", ")}]\nsource: ${CONCEPT_PAGE_SOURCE}\n---\n\n# ${title}\n\n${body}\n`;
 }
 
 export function validateConceptPageFormat(content: string): void {
@@ -125,13 +125,15 @@ export function validateConceptPageFormat(content: string): void {
   if (!titleValue || !summaryValue || tagsValue === undefined) {
     fail("Frontmatter must contain non-empty title, summary, and inline tags in canonical order.");
   }
-  const title = parseYamlString(titleValue);
-  parseYamlString(summaryValue);
+  const title = parseYamlString(titleValue, "Title");
+  parseYamlString(summaryValue, "Summary");
   if (lines[4] !== `source: ${CONCEPT_PAGE_SOURCE}` || lines[5] !== "---") {
     fail(`Frontmatter must end with source: ${CONCEPT_PAGE_SOURCE}.`);
   }
 
-  const tags = tagsValue.split(",").map((tag) => tag.trim());
+  const tags = tagsValue
+    .split(",")
+    .map((tag) => parseYamlString(tag.trim(), "Tag"));
   if (
     tags.some((tag) => !TAG_PATTERN.test(tag)) ||
     new Set(tags).size !== tags.length
