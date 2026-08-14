@@ -113,19 +113,3 @@ export function useDebounced<T>(value: T, delayMs: number): T {
   return settled;
 }
 
-/**
- * Bumps a counter whenever the OS colour scheme flips, so chart instances that
- * read their colours from CSS custom properties can be rebuilt.
- */
-export function useColorSchemeTick(): number {
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    const query = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => setTick((value) => value + 1);
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, []);
-
-  return tick;
-}

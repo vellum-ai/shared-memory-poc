@@ -1,39 +1,48 @@
-import type { ChartConfiguration } from "chart.js";
 import { useMemo } from "react";
 
 import type { ActionCounts, ActivityResponse, WeeklyActivity } from "../api";
 import { fetchActivity } from "../api";
-import { ChartCanvas, SERIES_PALETTE, readChartTheme } from "../charts";
+import {
+  ChartLegend,
+  type ChartSeries,
+  LineChart,
+  OTHER_SERIES_COLOR,
+  SERIES_SLOTS,
+  StackedBarChart,
+  seriesColor,
+} from "../charts";
 import { Card, EmptyState, ErrorBanner, Skeleton } from "../components";
 import { EMPTY_COUNTS, addCounts, totalOf, weekLabel } from "../format";
-import { useColorSchemeTick, useResource } from "../hooks";
+import { useResource } from "../hooks";
 
 export const DAY_OPTIONS = [30, 90, 180, 365];
+
+const OTHER_LABEL = "Other";
 
 interface AuthorTotals {
   author: string;
   skills: ActionCounts;
   pages: ActionCounts;
   total: number;
-  /** Series colour, taken from the leaderboard position so no two authors in
-   *  the same view can collide. */
   color: string;
 }
 
 interface Aggregate {
   weeks: string[];
+  /** Leaderboard rows, sorted by total. */
   authors: AuthorTotals[];
-  /** author -> weekStart -> total changes that week. */
-  byAuthorWeek: Map<string, Map<string, number>>;
+  /** Chart series in slot order; authors beyond the slots fold into Other. */
+  series: ChartSeries[];
   cumulative: number[];
   grandTotal: number;
 }
 
 function aggregate(weekly: WeeklyActivity[]): Aggregate {
   const weeks = [...new Set(weekly.map((row) => row.weekStart))].sort();
+  const weekIndex = new Map(weeks.map((week, i) => [week, i]));
   const totals = new Map<string, AuthorTotals>();
-  const byAuthorWeek = new Map<string, Map<string, number>>();
-  const weekTotals = new Map<string, number>();
+  const byAuthorWeek = new Map<string, number[]>();
+  const weekTotals = weeks.map(() => 0);
 
   for (const row of weekly) {
     const existing =
@@ -50,26 +59,51 @@ function aggregate(weekly: WeeklyActivity[]): Aggregate {
     });
 
     const rowTotal = totalOf(row.skills) + totalOf(row.pages);
-    const weeksForAuthor = byAuthorWeek.get(row.author) ?? new Map<string, number>();
-    weeksForAuthor.set(row.weekStart, (weeksForAuthor.get(row.weekStart) ?? 0) + rowTotal);
-    byAuthorWeek.set(row.author, weeksForAuthor);
-    weekTotals.set(row.weekStart, (weekTotals.get(row.weekStart) ?? 0) + rowTotal);
+    const column = weekIndex.get(row.weekStart) ?? 0;
+    const values = byAuthorWeek.get(row.author) ?? weeks.map(() => 0);
+    values[column] += rowTotal;
+    byAuthorWeek.set(row.author, values);
+    weekTotals[column] += rowTotal;
   }
 
   let running = 0;
-  const cumulative = weeks.map((week) => {
-    running += weekTotals.get(week) ?? 0;
+  const cumulative = weekTotals.map((total) => {
+    running += total;
     return running;
   });
 
+  // Slots are assigned alphabetically, so an author keeps their color when the
+  // day window changes and the set of visible authors shifts around them.
+  // Anyone past the last slot folds into one muted Other series.
+  const alphabetical = [...totals.keys()].sort((a, b) => a.localeCompare(b));
+  const slotted = alphabetical.slice(0, SERIES_SLOTS);
+  const folded = alphabetical.slice(SERIES_SLOTS);
+  const colorOf = new Map(slotted.map((author, slot) => [author, seriesColor(slot)]));
+
+  const series: ChartSeries[] = slotted.map((author) => ({
+    name: author,
+    color: colorOf.get(author) ?? OTHER_SERIES_COLOR,
+    values: byAuthorWeek.get(author) ?? weeks.map(() => 0),
+  }));
+  if (folded.length > 0) {
+    const other = weeks.map(() => 0);
+    for (const author of folded) {
+      const values = byAuthorWeek.get(author) ?? [];
+      values.forEach((value, i) => {
+        other[i] += value;
+      });
+    }
+    series.push({ name: OTHER_LABEL, color: OTHER_SERIES_COLOR, values: other });
+  }
+
   const authors = [...totals.values()]
     .sort((a, b) => b.total - a.total || a.author.localeCompare(b.author))
-    .map((entry, index) => ({
+    .map((entry) => ({
       ...entry,
-      color: SERIES_PALETTE[index % SERIES_PALETTE.length] ?? SERIES_PALETTE[0] ?? "#3d6df0",
+      color: colorOf.get(entry.author) ?? OTHER_SERIES_COLOR,
     }));
 
-  return { weeks, authors, byAuthorWeek, cumulative, grandTotal: running };
+  return { weeks, authors, series, cumulative, grandTotal: running };
 }
 
 export function ContributorsTab({
@@ -85,11 +119,11 @@ export function ContributorsTab({
     () => fetchActivity(baseId, days),
     [baseId, days],
   );
-  const themeTick = useColorSchemeTick();
 
   const data = activity.data;
   const summary = useMemo(() => aggregate(data?.weekly ?? []), [data]);
   const hasData = summary.weeks.length > 0;
+  const labels = summary.weeks.map(weekLabel);
 
   const daySelector = (
     <div class="segmented" role="group" aria-label="Time range">
@@ -119,12 +153,15 @@ export function ContributorsTab({
             <p>Pick a longer range, or wait for the next sync to bring commits in.</p>
           </EmptyState>
         ) : (
-          <ChartCanvas
-            height={260}
-            label="Stacked bar chart of changes per week, one colour per author"
-            deps={[summary, themeTick]}
-            build={() => buildStackedBar(summary)}
-          />
+          <>
+            <StackedBarChart
+              labels={labels}
+              series={summary.series}
+              height={260}
+              ariaLabel="Stacked bar chart of changes per week, one color per author"
+            />
+            <ChartLegend series={summary.series} />
+          </>
         )}
       </Card>
 
@@ -134,11 +171,11 @@ export function ContributorsTab({
         ) : !hasData ? (
           <p class="quiet">Nothing to plot for this range.</p>
         ) : (
-          <ChartCanvas
+          <LineChart
+            labels={labels}
+            values={summary.cumulative}
             height={220}
-            label="Line chart of total changes accumulating over time"
-            deps={[summary, themeTick]}
-            build={() => buildCumulativeLine(summary)}
+            ariaLabel="Line chart of total changes accumulating over time"
           />
         )}
       </Card>
@@ -220,112 +257,4 @@ function Leaderboard({
       </table>
     </div>
   );
-}
-
-function buildStackedBar(summary: Aggregate): ChartConfiguration {
-  const theme = readChartTheme();
-  return {
-    type: "bar",
-    data: {
-      labels: summary.weeks.map(weekLabel),
-      datasets: summary.authors.map((author) => ({
-        label: author.author,
-        data: summary.weeks.map(
-          (week) => summary.byAuthorWeek.get(author.author)?.get(week) ?? 0,
-        ),
-        backgroundColor: author.color,
-        borderWidth: 0,
-        borderRadius: 2,
-      })),
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: {
-        legend: {
-          position: "bottom",
-          labels: { color: theme.tick, boxWidth: 10, boxHeight: 10, usePointStyle: true },
-        },
-        tooltip: {
-          backgroundColor: theme.tooltip,
-          titleColor: theme.text,
-          bodyColor: theme.text,
-          borderColor: theme.border,
-          borderWidth: 1,
-          padding: 8,
-        },
-      },
-      scales: {
-        x: {
-          stacked: true,
-          grid: { display: false },
-          border: { color: theme.border },
-          ticks: { color: theme.tick, maxRotation: 0, autoSkipPadding: 12 },
-        },
-        y: {
-          stacked: true,
-          beginAtZero: true,
-          grid: { color: theme.grid },
-          border: { display: false },
-          ticks: { color: theme.tick, precision: 0 },
-        },
-      },
-    },
-  };
-}
-
-function buildCumulativeLine(summary: Aggregate): ChartConfiguration {
-  const theme = readChartTheme();
-  const accent = SERIES_PALETTE[0] ?? "#3d6df0";
-  return {
-    type: "line",
-    data: {
-      labels: summary.weeks.map(weekLabel),
-      datasets: [
-        {
-          label: "Total changes",
-          data: summary.cumulative,
-          borderColor: accent,
-          backgroundColor: accent,
-          fill: false,
-          tension: 0.25,
-          pointRadius: 2,
-          pointHoverRadius: 4,
-          borderWidth: 2,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: theme.tooltip,
-          titleColor: theme.text,
-          bodyColor: theme.text,
-          borderColor: theme.border,
-          borderWidth: 1,
-          padding: 8,
-        },
-      },
-      scales: {
-        x: {
-          grid: { display: false },
-          border: { color: theme.border },
-          ticks: { color: theme.tick, maxRotation: 0, autoSkipPadding: 12 },
-        },
-        y: {
-          beginAtZero: true,
-          grid: { color: theme.grid },
-          border: { display: false },
-          ticks: { color: theme.tick, precision: 0 },
-        },
-      },
-    },
-  };
 }

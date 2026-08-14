@@ -1,30 +1,53 @@
-import { format, formatDistanceToNow, parseISO } from "date-fns";
-
 import type { ActionCounts, ChangeAction, CommitChange } from "./api";
+
+// Hand-rolled date helpers. The runtime's bundler allowlists date-fns but its
+// 5 MB package cap rejects the installed size, so the import can never
+// resolve in a deployed build. Everything the app needs fits here.
 
 function toDate(value: string | null | undefined): Date | null {
   if (!value) return null;
-  const parsed = value.includes("T") ? parseISO(value) : new Date(`${value}T00:00:00`);
+  const parsed = value.includes("T") ? new Date(value) : new Date(`${value}T00:00:00`);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-/** "about 2 hours ago", or a fallback when the timestamp is missing or bad. */
+const RELATIVE_STEPS: Array<{ ms: number; singular: string; plural: string }> = [
+  { ms: 365 * 24 * 3_600_000, singular: "a year", plural: "years" },
+  { ms: 30 * 24 * 3_600_000, singular: "a month", plural: "months" },
+  { ms: 7 * 24 * 3_600_000, singular: "a week", plural: "weeks" },
+  { ms: 24 * 3_600_000, singular: "a day", plural: "days" },
+  { ms: 3_600_000, singular: "an hour", plural: "hours" },
+  { ms: 60_000, singular: "a minute", plural: "minutes" },
+];
+
+/** "2 hours ago", or a fallback when the timestamp is missing or bad. */
 export function relativeTime(value: string | null | undefined, fallback = "unknown"): string {
   const date = toDate(value);
   if (!date) return fallback;
-  return formatDistanceToNow(date, { addSuffix: true });
+  const elapsed = Date.now() - date.getTime();
+  if (elapsed < 0) return "just now";
+  for (const step of RELATIVE_STEPS) {
+    if (elapsed >= step.ms) {
+      const count = Math.floor(elapsed / step.ms);
+      return count === 1 ? `${step.singular} ago` : `${count} ${step.plural} ago`;
+    }
+  }
+  return "just now";
 }
 
 /** Absolute timestamp for the `title` attribute beside a relative one. */
 export function absoluteTime(value: string | null | undefined): string | undefined {
   const date = toDate(value);
-  return date ? format(date, "PPpp") : undefined;
+  return date
+    ? date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+    : undefined;
 }
 
 /** Short week label for a chart axis, from a `YYYY-MM-DD` week start. */
 export function weekLabel(weekStart: string): string {
   const date = toDate(weekStart);
-  return date ? format(date, "MMM d") : weekStart;
+  return date
+    ? date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    : weekStart;
 }
 
 /** Compact duration for lock ages: "45s", "12m", "2h 05m". */
