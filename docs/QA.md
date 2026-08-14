@@ -87,11 +87,13 @@ One concept page.
 ```bash
 cat > "$FIXTURE/concepts/deploy-runbook.md" <<'EOF'
 ---
-source: import:shared-repo
 title: Deploy runbook
 summary: How the team ships a release.
 tags: [ops]
+source: import:shared-repo
 ---
+
+# Deploy runbook
 
 Releases go out on Tuesdays. The release captain cuts the tag, waits for the
 staging bake to finish, then dispatches the production run.
@@ -389,11 +391,13 @@ Change the page in the fixture repo and commit.
 ```bash
 cat > "$FIXTURE/concepts/deploy-runbook.md" <<'EOF'
 ---
-source: import:shared-repo
 title: Deploy runbook
 summary: How the team ships a release.
 tags: [ops]
+source: import:shared-repo
 ---
+
+# Deploy runbook
 
 Releases go out on Thursdays. The release captain cuts the tag, waits for the
 staging bake to finish, then dispatches the production run.
@@ -503,9 +507,13 @@ Now make a change under a different author, so the attribution shows up:
 ```bash
 cat > "$FIXTURE/concepts/incident-review.md" <<'EOF'
 ---
-source: import:shared-repo
 title: Incident reviews
+summary: When the team completes incident reviews.
+tags: [incidents]
+source: import:shared-repo
 ---
+
+# Incident reviews
 
 Reviews happen within three days of the incident.
 EOF

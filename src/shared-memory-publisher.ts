@@ -9,6 +9,10 @@ import {
   validateConceptPath,
 } from "./concept-path.js";
 import {
+  ConceptPageFormatError,
+  validateConceptPageFormat,
+} from "./concept-page.js";
+import {
   createEffectivePolicy,
   createOperationSignal,
   createPolicyFingerprint,
@@ -106,6 +110,25 @@ function byteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
 
+function requireCanonicalConceptPage(
+  path: string,
+  content: string,
+  stage: "input" | "filtered",
+): void {
+  try {
+    validateConceptPageFormat(content);
+  } catch (error) {
+    if (!(error instanceof ConceptPageFormatError)) {
+      throw error;
+    }
+    const context = stage === "filtered" ? " is not canonical after Git filters" : "";
+    throw new SharedMemoryPublishError(
+      "INVALID_CONCEPT_FORMAT",
+      `${path}${context}: ${error.message}`,
+    );
+  }
+}
+
 function exactKeys(value: Record<string, unknown>, expected: string[]): boolean {
   const actual = Object.keys(value).sort();
   const sortedExpected = [...expected].sort();
@@ -184,6 +207,7 @@ export function parsePublishProposal(input: Record<string, unknown>): SharedMemo
         `${path} exceeds the ${MAX_CONCEPT_FILE_BYTES}-byte publishing limit or is not text.`,
       );
     }
+    requireCanonicalConceptPage(path, value.content, "input");
     totalBytes += size;
     return { path, content: value.content };
   });
@@ -520,6 +544,7 @@ async function filterAndValidateBlob(
       `${upsert.path} is empty after Git filters.`,
     );
   }
+  requireCanonicalConceptPage(upsert.path, content, "filtered");
   return { oid: blobOid, content: blob.stdout };
 }
 
