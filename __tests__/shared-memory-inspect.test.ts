@@ -123,6 +123,7 @@ describe("shared_memory_inspect tool contract", () => {
     expect(String(inspectTool.defaultRiskLevel)).toBe("low");
     expect(inspectTool.description).toContain("durable");
     expect(inspectTool.description).toContain("non-personal");
+    expect(inspectTool.description).toContain("source is import:shared-repo");
 
     const schema = inspectTool.input_schema as Record<string, unknown>;
     expect(schema.oneOf).toBeArray();
@@ -140,6 +141,11 @@ describe("shared_memory_inspect tool contract", () => {
     expect(policy).toContain("identifiable person");
     expect(policy).toContain("technical decisions");
     expect(body.policyFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    const format = body.conceptPageFormat as { guidance: string; template: string };
+    expect(format.guidance).toContain("H1 exactly matching title");
+    expect(format.template).toContain(
+      "title: Topic title\nsummary: A concise description of the shared knowledge.\ntags: [topic]\nsource: import:shared-repo",
+    );
   });
 
   test("setup guidance narrows sharing without overriding hard exclusions", async () => {

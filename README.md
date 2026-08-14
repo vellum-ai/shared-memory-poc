@@ -18,8 +18,8 @@ Standard SKILL.md bundles, following the Agent Skills specification at
 
 ### `concepts/**.md`
 
-Memory concept pages. Each file is optional YAML frontmatter followed by a
-markdown body. The file path with the `.md` extension removed becomes the page
+Memory concept pages. Each file uses required YAML frontmatter followed by a
+Markdown body. The file path with the `.md` extension removed becomes the page
 slug, and pages are ingested under the `shared/` slug prefix. So
 `concepts/team/oncall.md` becomes the page `shared/team/oncall`.
 
@@ -33,19 +33,28 @@ only sign of it is a warning naming the slug. The other pages import as usual,
 so a file named this way can sit there being skipped indefinitely. Name it
 `concepts/team-oncall.md` instead.
 
-Recommended frontmatter:
+Preferred generated format:
 
 ```yaml
 ---
-source: import:shared-repo
 title: On-call rotation
 summary: Who is on call and how to reach them.
 tags: [ops, team]
+source: import:shared-repo
 ---
+
+# On-call rotation
+
+The pager rotates every Monday.
 ```
 
-`source: import:shared-repo` marks the page as imported content. `title`,
-`summary`, and `tags` are optional.
+For structured upserts, the publish tool renders these fields in this order.
+`title` and `summary` are non-empty text, tags are normalized to unique
+lowercase slugs, and `source` is set to `import:shared-repo`. The Markdown body
+starts with an H1 that exactly matches `title`, followed by non-empty durable
+shared knowledge. Legacy complete-content upserts remain accepted for
+compatibility. If repository Git filters corrupt a generated page, publication
+stops before pushing it.
 
 ### Names to avoid
 

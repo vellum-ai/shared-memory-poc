@@ -23,7 +23,31 @@ import {
 import publishTool, { executeSharedMemoryPublish } from "../tools/shared-memory-publish.js";
 import { commit, identify, initRepo, runGit } from "./git-fixture.js";
 
-const DEPLOY_CONTENT = "---\ntitle: Deploy runbook\n---\n\nUse the release checklist.\n";
+function conceptPage(
+  title: string,
+  summary: string,
+  tags: string[],
+  body: string,
+): string {
+  return `---\ntitle: ${title}\nsummary: ${summary}\ntags: [${tags.join(", ")}]\nsource: import:shared-repo\n---\n\n# ${title}\n\n${body.trim()}\n`;
+}
+
+function structuredConceptPage(
+  path: string,
+  title: string,
+  summary: string,
+  tags: string[],
+  body: string,
+): Record<string, unknown> {
+  return { path, title, summary, tags, body };
+}
+
+const DEPLOY_CONTENT = conceptPage(
+  "Deploy runbook",
+  "How the team ships a release.",
+  ["ops", "release"],
+  "Use the release checklist.",
+);
 
 interface Fixture {
   root: string;
@@ -158,7 +182,7 @@ async function publish(
 
 function proposal(
   expectedHead: string,
-  upserts: Array<{ path: string; content: string }>,
+  upserts: Array<Record<string, unknown>>,
   expectedPolicyFingerprint = policyFingerprint(),
 ): Record<string, unknown> {
   return {
@@ -255,21 +279,39 @@ describe("shared_memory_publish tool contract", () => {
     expect(publishTool.description).toContain("relationship");
     expect(publishTool.description).toContain("identifiable person");
     expect(publishTool.description).toContain("Deletions are not supported");
+    expect(publishTool.description).toContain("publisher renders the canonical template");
+    expect(JSON.stringify(publishTool.input_schema)).toContain('"oneOf"');
+    expect(JSON.stringify(publishTool.input_schema)).toContain('"title"');
+    expect(JSON.stringify(publishTool.input_schema)).toContain('"content"');
   });
 });
 
 describe("atomic shared memory publishing", () => {
   test("publishes multiple upserts as one commit and leaves the watermark unchanged", async () => {
     const fixture = makeFixture({ branch: "knowledge" });
-    const updatedDeploy = `${DEPLOY_CONTENT}\nRollback through the same checklist.\n`;
+    const updatedDeploy = conceptPage(
+      "Deploy runbook",
+      "How the team ships a release.",
+      ["ops", "release"],
+      "Use the release checklist.\n\nRollback through the same checklist.",
+    );
     const result = await publish(
       fixture,
       proposal(fixture.expectedHead, [
-        { path: "concepts/deploy-runbook.md", content: updatedDeploy },
-        {
-          path: "concepts/architecture/event-routing.md",
-          content: "---\ntitle: Event routing\n---\n\nRoute invalidations through the gateway.\n",
-        },
+        structuredConceptPage(
+          "concepts/deploy-runbook.md",
+          "Deploy runbook",
+          "How the team ships a release.",
+          ["Ops", "release", "ops"],
+          "Use the release checklist.\n\nRollback through the same checklist.",
+        ),
+        structuredConceptPage(
+          "concepts/architecture/event-routing.md",
+          "Event routing",
+          "How invalidations move through the system.",
+          ["architecture"],
+          "Route invalidations through the gateway.",
+        ),
       ]),
     );
 
@@ -448,6 +490,12 @@ describe("atomic shared memory publishing", () => {
         script: "printf 'valid\\000invalid\\n'",
       },
       { name: "blank", output: Buffer.from("   \n"), script: "printf '   \\n'" },
+      {
+        name: "noncanonical",
+        output: Buffer.from("# Filtered\n"),
+        script: "printf '# Filtered\\n'",
+        errorCode: "INVALID_CONCEPT_FORMAT",
+      },
     ];
 
     for (const testCase of cases) {
@@ -463,15 +511,18 @@ describe("atomic shared memory publishing", () => {
       const result = await publish(
         fixture,
         proposal(attributes.sha, [
-          {
-            path: "concepts/deploy-runbook.md",
-            content: `${DEPLOY_CONTENT}\nFiltered update.\n`,
-          },
+          structuredConceptPage(
+            "concepts/deploy-runbook.md",
+            "Deploy runbook",
+            "How the team ships a release.",
+            ["ops", "release"],
+            "Use the release checklist.\n\nFiltered update.",
+          ),
         ]),
       );
 
       expect(result.reply.isError).toBe(true);
-      expect(errorCode(result.body)).toBe("CONTENT_LIMIT");
+      expect(errorCode(result.body)).toBe(testCase.errorCode ?? "CONTENT_LIMIT");
       expect(remoteHead(fixture)).toBe(attributes.sha);
       const rejected = join(fixture.root, `${testCase.name}-filtered.bin`);
       writeFileSync(rejected, testCase.output);
@@ -923,6 +974,23 @@ describe("atomic shared memory publishing", () => {
     expect(remoteHead(fixture)).toBe(fixture.expectedHead);
   });
 
+  test("accepts legacy non-canonical pages for compatibility", async () => {
+    const fixture = makeFixture();
+    const legacyContent = "# Deploy runbook\n\nLegacy Markdown remains publishable.\n";
+    const result = await publish(
+      fixture,
+      proposal(fixture.expectedHead, [
+        {
+          path: "concepts/deploy-runbook.md",
+          content: legacyContent,
+        },
+      ]),
+    );
+
+    expect(result.reply.isError).toBe(false);
+    expect(remoteFile(fixture, "concepts/deploy-runbook.md")).toBe(legacyContent);
+  });
+
   test("rejects an existing symlink path", async () => {
     const fixture = makeFixture();
     const writer = join(fixture.root, "symlink-writer");
@@ -934,7 +1002,17 @@ describe("atomic shared memory publishing", () => {
 
     const result = await publish(
       fixture,
-      proposal(symlinkHead, [{ path: "concepts/linked.md", content: "# Replacement\n" }]),
+      proposal(symlinkHead, [
+        {
+          path: "concepts/linked.md",
+          content: conceptPage(
+            "Replacement",
+            "A replacement for invalid linked content.",
+            ["recovery"],
+            "Use the canonical replacement.",
+          ),
+        },
+      ]),
     );
 
     expect(result.reply.isError).toBe(true);
@@ -950,7 +1028,12 @@ describe("atomic shared memory publishing", () => {
       "concepts/oversized.md",
       `# Oversized\n\n${"x".repeat(70_000)}\n`,
     );
-    const replacement = "# Recovered page\n\nUse the bounded procedure.\n";
+    const replacement = conceptPage(
+      "Recovered page",
+      "A recovered concept page within the publishing limit.",
+      ["recovery"],
+      "Use the bounded procedure.",
+    );
 
     const result = await publish(
       fixture,

@@ -9,6 +9,11 @@ import {
   validateConceptPath,
 } from "./concept-path.js";
 import {
+  ConceptPageFormatError,
+  formatConceptPage,
+  validateConceptPageFormat,
+} from "./concept-page.js";
+import {
   createEffectivePolicy,
   createOperationSignal,
   createPolicyFingerprint,
@@ -32,6 +37,7 @@ const GIT_OBJECT_ID = new RegExp(GIT_OBJECT_ID_PATTERN);
 export interface SharedMemoryUpsert {
   path: string;
   content: string;
+  canonical: boolean;
 }
 
 export interface SharedMemoryPublishProposal {
@@ -106,6 +112,54 @@ function byteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
 
+function requireCanonicalConceptPage(path: string, content: string): void {
+  try {
+    validateConceptPageFormat(content);
+  } catch (error) {
+    if (!(error instanceof ConceptPageFormatError)) {
+      throw error;
+    }
+    throw new SharedMemoryPublishError(
+      "INVALID_CONCEPT_FORMAT",
+      `${path} is not canonical after Git filters: ${error.message}`,
+    );
+  }
+}
+
+function renderStructuredConceptPage(
+  value: Record<string, unknown>,
+  path: string,
+): string {
+  if (
+    typeof value.title !== "string" ||
+    typeof value.summary !== "string" ||
+    !Array.isArray(value.tags) ||
+    value.tags.some((tag) => typeof tag !== "string") ||
+    typeof value.body !== "string"
+  ) {
+    throw new SharedMemoryPublishError(
+      "INVALID_INPUT",
+      `${path} requires string title, summary, and body fields plus a string tags array.`,
+    );
+  }
+  try {
+    return formatConceptPage({
+      title: value.title,
+      summary: value.summary,
+      tags: value.tags as string[],
+      body: value.body,
+    });
+  } catch (error) {
+    if (!(error instanceof ConceptPageFormatError)) {
+      throw error;
+    }
+    throw new SharedMemoryPublishError(
+      "INVALID_INPUT",
+      `${path}: ${error.message}`,
+    );
+  }
+}
+
 function exactKeys(value: Record<string, unknown>, expected: string[]): boolean {
   const actual = Object.keys(value).sort();
   const sortedExpected = [...expected].sort();
@@ -164,28 +218,42 @@ export function parsePublishProposal(input: Record<string, unknown>): SharedMemo
 
   let totalBytes = 0;
   const upserts = input.upserts.map((value): SharedMemoryUpsert => {
-    if (!isRecord(value) || !exactKeys(value, ["content", "path"])) {
+    if (!isRecord(value)) {
       throw new SharedMemoryPublishError(
         "INVALID_INPUT",
-        "Each upsert must contain only path and complete Markdown content.",
+        "Each upsert must be a structured concept page or a legacy complete Markdown page.",
       );
     }
     const path = validateConceptPath(value.path);
-    if (typeof value.content !== "string" || value.content.trim().length === 0) {
+    let content: string;
+    let canonical: boolean;
+    if (exactKeys(value, ["body", "path", "summary", "tags", "title"])) {
+      content = renderStructuredConceptPage(value, path);
+      canonical = true;
+    } else if (exactKeys(value, ["content", "path"]) && typeof value.content === "string") {
+      content = value.content;
+      canonical = false;
+    } else {
+      throw new SharedMemoryPublishError(
+        "INVALID_INPUT",
+        "Each upsert must contain either path, title, summary, tags, and body, or legacy path and content fields.",
+      );
+    }
+    if (content.trim().length === 0) {
       throw new SharedMemoryPublishError(
         "INVALID_INPUT",
         `${path} must contain non-empty Markdown.`,
       );
     }
-    const size = byteLength(value.content);
-    if (value.content.includes("\0") || size > MAX_CONCEPT_FILE_BYTES) {
+    const size = byteLength(content);
+    if (content.includes("\0") || size > MAX_CONCEPT_FILE_BYTES) {
       throw new SharedMemoryPublishError(
         "CONTENT_LIMIT",
         `${path} exceeds the ${MAX_CONCEPT_FILE_BYTES}-byte publishing limit or is not text.`,
       );
     }
     totalBytes += size;
-    return { path, content: value.content };
+    return { path, content, canonical };
   });
   if (new Set(upserts.map(({ path }) => path)).size !== upserts.length) {
     throw new SharedMemoryPublishError("PATH_ERROR", "Published concept paths must be unique.");
@@ -519,6 +587,9 @@ async function filterAndValidateBlob(
       "CONTENT_LIMIT",
       `${upsert.path} is empty after Git filters.`,
     );
+  }
+  if (upsert.canonical) {
+    requireCanonicalConceptPage(upsert.path, content);
   }
   return { oid: blobOid, content: blob.stdout };
 }
