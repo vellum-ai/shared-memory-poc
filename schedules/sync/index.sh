@@ -7,6 +7,13 @@ REPO="$DATA/repo"
 CONFIG="$PLUGIN_DIR/config.json"
 LOCK="$DATA/sync.lock"
 
+# Answers the credential prompts an https:// remote raises, from the token the
+# setup flow stored in the vault. An SSH remote never reaches these prompts, so
+# this is set unconditionally rather than branched on the URL. Exported because
+# git reads it from the environment of the clone and fetch below.
+export GIT_ASKPASS="$PLUGIN_DIR/bin/git-askpass.sh"
+export GIT_TERMINAL_PROMPT=0
+
 if [ ! -f "$CONFIG" ]; then
   echo "shared-memory: unconfigured, skipping"
   exit 0

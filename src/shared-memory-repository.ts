@@ -100,6 +100,15 @@ export interface OperationSignal {
 
 export const DEFAULT_PLUGIN_DIR = fileURLToPath(new URL("..", import.meta.url));
 
+/**
+ * The askpass helper git uses to authenticate an HTTPS remote. Resolved from
+ * this module rather than the caller's plugin dir so it stays correct however
+ * the plugin was installed.
+ */
+export function askpassPath(): string {
+  return join(DEFAULT_PLUGIN_DIR, "bin", "git-askpass.sh");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -163,6 +172,11 @@ export async function runRepositoryGit(
       env: {
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
+        // Answers HTTPS credential prompts from the vault. Harmless on the
+        // paths that never reach the network and on SSH remotes, which
+        // authenticate before git asks anything, so it is set once here rather
+        // than threaded through the callers that happen to fetch or push.
+        GIT_ASKPASS: askpassPath(),
         LC_ALL: "C",
         ...options.env,
       },

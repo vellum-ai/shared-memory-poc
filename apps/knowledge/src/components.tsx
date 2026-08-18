@@ -117,3 +117,101 @@ export function NameChip({
 export function PathChip({ path }: { path: string }) {
   return <span class="path-chip" title={path}>{pathLabel(path)}</span>;
 }
+
+/**
+ * The app's only button style, in three weights. Everything that submits,
+ * advances or dismisses uses this, so a new surface cannot introduce a fourth
+ * kind of button by accident.
+ */
+export function Button({
+  children,
+  onClick,
+  variant = "secondary",
+  type = "button",
+  disabled,
+  busy,
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  variant?: "primary" | "secondary" | "quiet";
+  type?: "button" | "submit";
+  disabled?: boolean;
+  busy?: boolean;
+}) {
+  return (
+    <button
+      class={`btn btn-${variant}`}
+      type={type}
+      onClick={onClick}
+      // A busy button stays disabled so a slow route cannot be submitted twice,
+      // and `aria-busy` tells a screen reader why it stopped responding.
+      disabled={disabled || busy}
+      aria-busy={busy ? "true" : undefined}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * A labelled text input with room for a hint and an error.
+ *
+ * The hint is tied to the input with `aria-describedby` rather than left as
+ * loose text, because the hints here carry the instructions — what a URL should
+ * look like, which scopes a token needs — and a screen reader that skips them
+ * loses the part of the form that explains it.
+ */
+export function Field({
+  id,
+  label,
+  value,
+  onInput,
+  type = "text",
+  placeholder,
+  hint,
+  error,
+  autocomplete,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onInput: (value: string) => void;
+  type?: "text" | "password" | "email";
+  placeholder?: string;
+  hint?: ReactNode;
+  error?: string | null;
+  autocomplete?: string;
+}) {
+  const hintId = hint ? `${id}-hint` : undefined;
+  const errorId = error ? `${id}-error` : undefined;
+  const describedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
+
+  return (
+    <div class="field">
+      <label class="field-label" for={id}>
+        {label}
+      </label>
+      <input
+        class={error ? "field-input field-input-bad" : "field-input"}
+        id={id}
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        autocomplete={autocomplete}
+        aria-describedby={describedBy}
+        aria-invalid={error ? "true" : undefined}
+        onInput={(event) => onInput((event.target as HTMLInputElement).value)}
+      />
+      {hint ? (
+        <p class="field-hint" id={hintId}>
+          {hint}
+        </p>
+      ) : null}
+      {error ? (
+        <p class="field-error" id={errorId} role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}

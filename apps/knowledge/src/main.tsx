@@ -4,6 +4,9 @@ import { render } from "react-dom";
 import type { SummaryResponse } from "./api";
 import { fetchSummary } from "./api";
 import { useResource } from "./hooks";
+import type { SetupStatus, StatusResponse } from "./setup/api";
+import { fetchSetupStatus } from "./setup/api";
+import { SetupWizard } from "./setup/Wizard";
 import { ActivityTab } from "./tabs/Activity";
 import { BrowseTab } from "./tabs/Browse";
 import { ContributorsTab } from "./tabs/Contributors";
@@ -24,8 +27,28 @@ const TABS = [
 type TabId = (typeof TABS)[number]["id"];
 
 function App() {
+  const setup = useResource<StatusResponse>(fetchSetupStatus, []);
+
+  // Held locally so a step the user just completed shows immediately, without
+  // waiting for a refetch to confirm what the route already returned.
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  // Set when the user chooses the dashboard over an unfinished last step. It is
+  // deliberately not persisted: setup is cheap to re-show and a half-configured
+  // install that silently hides its own setup screen is worse than one that
+  // asks again next time.
+  const [setupDismissed, setSetupDismissed] = useState(false);
+
+  const status = setupStatus ?? setup.data?.status ?? null;
+  // The dashboard is only withheld once the status is actually known. Showing
+  // the wizard while the first request is in flight would flash it at every
+  // configured install on every load.
+  const showSetup = status !== null && !status.complete && !setupDismissed;
+
+  // Summary polling would fail on every tick for an unconfigured install, so it
+  // stays idle until there is something to summarize.
   const summary = useResource<SummaryResponse>(fetchSummary, [], {
     pollMs: SUMMARY_POLL_MS,
+    enabled: !showSetup,
   });
 
   const [tab, setTab] = useState<TabId>("overview");
@@ -47,6 +70,26 @@ function App() {
   const onSelectPath = (path: string | null) => {
     setSelectedPath(path);
   };
+
+  // A null status means the first request has not answered yet, or failed. The
+  // wizard renders the skeleton and the retry for both, so the dashboard waits
+  // rather than opening onto tabs whose own requests are about to fail too.
+  if (showSetup || status === null) {
+    return (
+      <div class="app">
+        <main class="content">
+          <SetupWizard
+            status={status}
+            loading={setup.loading}
+            error={setup.error}
+            onStatus={setSetupStatus}
+            onReload={setup.reload}
+            onDismiss={() => setSetupDismissed(true)}
+          />
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div class="app">

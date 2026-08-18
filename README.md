@@ -294,6 +294,87 @@ digest's. The API models knowledge bases as a list even though `config.json`
 configures exactly one today, so a future multi-repo install is an additive
 change.
 
+## Setup
+
+The app opens on a setup screen whenever the install is not ready to sync, so a
+fresh install lands on the one thing worth doing rather than on four empty
+tabs. The screen is served from the plugin's own routes under
+`/x/plugins/shared-memory/setup/`, and it decides what to show from
+`config.json`, the clone on disk, and the credential vault — never from state
+it keeps itself.
+
+Three steps have to pass before the dashboard opens:
+
+- **Repository** — `repoUrl` and `branch`, written into `config.json`. Every
+  other key in the file is carried through untouched, because the sync schedule
+  writes to it too.
+- **Access** — see below.
+- **Identity** — the `author` block. Without it the plugin still reads shared
+  knowledge, but publishing refuses with `GIT_IDENTITY_MISSING`.
+
+A fourth step offers to run the first sync. It does not gate the dashboard: the
+schedule gets there on its own, and holding the user at a screen they cannot
+act on would be worse than letting them in.
+
+### Repository access
+
+Which transport the `repoUrl` uses decides what the access step can do.
+
+An `https://` URL authenticates with a token, so the screen collects one, stores
+it, and checks it against the repository. A `git@` URL authenticates with an SSH
+key that lives on the machine, which nothing in the app can create or inspect —
+so that install is judged by its result. A clone whose origin matches the
+configured URL is proof the key works and the step passes; no clone means the
+step reports what is missing and offers to switch to the HTTPS address for the
+same repository.
+
+An install already syncing over SSH is therefore never asked for a token.
+
+### The token
+
+The token goes to the assistant's encrypted vault as `github/shared-memory`,
+never to `config.json` and never to the plugin's own disk. The field has to be
+the plugin's manifest name: the host scopes a plugin to credentials whose field
+matches it, for both reads and writes, which is what keeps this plugin away from
+the user's own `github/token`.
+
+Git reaches it through `bin/git-askpass.sh`, pointed at by `GIT_ASKPASS` in
+`runRepositoryGit` and in the sync schedule. The helper answers git's username
+prompt with `x-access-token` and its password prompt from
+`assistant credentials reveal --json`. Two consequences worth knowing:
+
+- The token never appears in a remote URL or in any process's arguments.
+- The helper parses the JSON envelope rather than reading the bare value,
+  because a daemon that is down prints a diagnostic on the same stream — and
+  git would hand that prose to GitHub as a password.
+
+An unrecognized prompt gets no answer at all, so an SSH key passphrase prompt
+can never be answered with the GitHub token.
+
+To set the token without the app:
+
+```bash
+assistant credentials set --service github --field shared-memory <token>
+```
+
+### Host requirement
+
+Storing the token uses `storeCredential` from `@vellumai/plugin-api`, which is
+newer than the published package this repo depends on. It reaches an install
+through the shim the assistant generates from its own index, so a current
+assistant has it at runtime while `node_modules` still describes 0.11.3.
+
+`src/setup/host-credentials.ts` is the single place that gap is handled. It
+reads the call off a namespace rather than importing it by name, because a named
+import of a missing export fails to *link* — which would take down all four
+setup routes rather than the one step that needs it. An assistant without the
+call gets a message naming the CLI command above.
+
+Two things to delete once the package publishes a version that exports
+`storeCredential`: `src/setup/plugin-api-pending.d.ts`, and the namespace
+indirection in `src/setup/host-credentials.ts`. Raise the dependency range in
+`package.json` at the same time.
+
 ## Publishing identity
 
 Every commit records both the person responsible for the publication and the
@@ -344,10 +425,18 @@ For the proof of concept:
    the running daemon, so do it before the next step.
 2. Stop the daemon: `vellum sleep --wait 60s`.
 3. Clone or copy this repo into `$VELLUM_WORKSPACE_DIR/plugins/shared-memory/`.
-4. `cp config.example.json config.json` and set `repoUrl` to your content repo,
-   `branch` if it is not `main`, and use optional `sharingGuidance` to describe
-   the kinds of non-personal team knowledge you want to share.
-5. Start the daemon: `vellum wake`.
+4. Start the daemon: `vellum wake`.
+5. Open the `knowledge` app from the Library tab and work through the setup
+   screen: repository, access, publishing author.
+
+Steps 4 and 5 replace hand-editing `config.json`, which is still supported —
+`cp config.example.json config.json` and fill in `repoUrl` before waking the
+daemon does the same thing. The setup screen exists because it can also check
+the token against the repository and report what is wrong, which editing a file
+cannot.
+
+`sharingGuidance` has no field on the setup screen and is set in `config.json`
+directly. It describes the kinds of non-personal team knowledge you want shared.
 
 `sharingGuidance` can focus or narrow sharing to topics such as architecture
 decisions, runbooks, team conventions, and reusable troubleshooting. Omitting it

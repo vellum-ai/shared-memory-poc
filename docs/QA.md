@@ -592,6 +592,66 @@ plugin lands or changes; if the Library shows the app but opening it fails,
 give it a moment and reopen. The app polls, so a sync that lands while it is
 open shows up within a minute.
 
+## Step 13b — Verify the setup screen
+
+Everything above installed the plugin by writing `config.json` by hand, so the
+setup screen has been satisfied from the first load. This step makes it appear.
+
+Move the config aside and reopen the app:
+
+```bash
+mv "$PLUGIN_DIR/config.json" "$PLUGIN_DIR/config.json.qa"
+```
+
+Expect the app to open on **Set up shared knowledge** instead of the tabs, with
+the repository step open and the rest waiting. Check each of these:
+
+1. **A bad URL is refused.** Enter `not a url` and save. Expect the repository
+   step to go amber and say it is not a git URL, and expect no `config.json` to
+   appear on disk.
+2. **An SSH URL is not asked for a token.** Enter the fixture repo's `file://`
+   or `git@` address. Expect the access step to report the SSH key path rather
+   than a token field. A `file://` fixture repo has no owner/repo, so no HTTPS
+   switch is offered — that is correct, not a bug.
+3. **An HTTPS URL asks for a token.** Enter
+   `https://github.com/<you>/<any-repo>.git`. Expect a password field, and
+   expect the hint to name Contents read and write.
+4. **A bad token is reported, not swallowed.** Paste `ghp_notarealtoken`.
+   Expect the screen to say the token was saved *and* that GitHub rejected it.
+   Confirm both halves are true:
+
+   ```bash
+   assistant credentials inspect --service github --field shared-memory --json
+   ```
+
+   Expect `ok: true` with a masked value. The token really is stored; only the
+   check failed.
+5. **A real token verifies.** Paste a token that can read the repository.
+   Expect the access step to go green, and expect the message to state whether
+   publishing will work — a read-only token says so rather than passing
+   silently.
+6. **The author step gates the dashboard.** Expect it to still be open. Fill it
+   in and expect the dashboard to become reachable.
+
+Then restore the fixture config and reload:
+
+```bash
+mv "$PLUGIN_DIR/config.json.qa" "$PLUGIN_DIR/config.json"
+```
+
+Expect the app to open on the tabs again, with no setup screen.
+
+Finally, check the token actually reaches git. With an HTTPS repo configured
+and a valid token stored, run a sync and confirm it clones without prompting:
+
+```bash
+"$PLUGIN_DIR/schedules/sync/index.sh"
+```
+
+Expect a clean exit. A hang, or a `could not read Username` error, means
+`GIT_ASKPASS` is not reaching the helper — check that `bin/git-askpass.sh` is
+executable and that `jq` is on the daemon's PATH.
+
 ## Step 14 — Verify workspace hygiene
 
 The plugin, the clone and the watermark all live in the workspace, but none of

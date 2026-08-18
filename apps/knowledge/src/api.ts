@@ -11,7 +11,10 @@
  * callers only deal with the success shape.
  */
 
-const ROUTE_PREFIX = "/x/plugins/shared-memory/knowledge";
+/** Root of every route this plugin serves. */
+export const PLUGIN_PREFIX = "/x/plugins/shared-memory";
+
+const ROUTE_PREFIX = `${PLUGIN_PREFIX}/knowledge`;
 
 export class ApiError extends Error {
   readonly code: string;
@@ -206,14 +209,31 @@ function readEnvelopeError(body: unknown): ApiError | null {
   );
 }
 
-async function request<T>(
-  path: string,
-  params: Record<string, QueryValue> = {},
+/** A request body, sent as JSON. `undefined` makes the call a GET. */
+export type RequestBody = Record<string, unknown> | undefined;
+
+/**
+ * One round trip to any of the plugin's routes, including the envelope
+ * handling every one of them shares.
+ *
+ * Takes a whole path rather than a suffix so the setup routes can use it too.
+ * The knowledge helpers below wrap it with their own prefix.
+ */
+export async function requestRoute<T>(
+  fullPath: string,
+  body?: RequestBody,
 ): Promise<T> {
   let response;
   try {
     response = await window.vellum.fetch(
-      `${ROUTE_PREFIX}${path}${queryString(params)}`,
+      fullPath,
+      body === undefined
+        ? undefined
+        : {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
     );
   } catch (cause) {
     throw new ApiError(
@@ -222,9 +242,9 @@ async function request<T>(
     );
   }
 
-  let body: unknown;
+  let payload: unknown;
   try {
-    body = await response.json();
+    payload = await response.json();
   } catch {
     throw new ApiError(
       "BAD_RESPONSE",
@@ -232,13 +252,13 @@ async function request<T>(
     );
   }
 
-  const envelopeError = readEnvelopeError(body);
+  const envelopeError = readEnvelopeError(payload);
   if (envelopeError) throw envelopeError;
 
   const ok =
-    typeof body === "object" &&
-    body !== null &&
-    (body as { ok?: unknown }).ok === true;
+    typeof payload === "object" &&
+    payload !== null &&
+    (payload as { ok?: unknown }).ok === true;
 
   if (!ok) {
     throw new ApiError(
@@ -247,7 +267,14 @@ async function request<T>(
     );
   }
 
-  return body as T;
+  return payload as T;
+}
+
+function request<T>(
+  path: string,
+  params: Record<string, QueryValue> = {},
+): Promise<T> {
+  return requestRoute<T>(`${ROUTE_PREFIX}${path}${queryString(params)}`);
 }
 
 // ---------------------------------------------------------------------------
