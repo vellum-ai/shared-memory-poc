@@ -360,20 +360,33 @@ assistant credentials set --service github --field shared-memory <token>
 ### Host requirement
 
 Storing the token uses `storeCredential` from `@vellumai/plugin-api`, which is
-newer than the published package this repo depends on. It reaches an install
-through the shim the assistant generates from its own index, so a current
-assistant has it at runtime while `node_modules` still describes 0.11.3.
+newer than the published package this repo depends on.
 
-`src/setup/host-credentials.ts` is the single place that gap is handled. It
-reads the call off a namespace rather than importing it by name, because a named
-import of a missing export fails to *link* — which would take down all four
-setup routes rather than the one step that needs it. An assistant without the
-call gets a message naming the CLI command above.
+The npm artifact is stamped by the assistant's release workflow, so a new export
+reaches npm on the next release cut and not before. That gap applies to every
+export the plugin API gains, not just this one, and the shim's export list is
+fixed at publish time — which makes it a *link* failure rather than a runtime
+one. A named import of a missing export takes down every module in its import
+graph: one `import { storeCredential }` would have killed all four setup routes,
+not just the step that needs it.
 
-Two things to delete once the package publishes a version that exports
-`storeCredential`: `src/setup/plugin-api-pending.d.ts`, and the namespace
-indirection in `src/setup/host-credentials.ts`. Raise the dependency range in
-`package.json` at the same time.
+`src/setup/host-credentials.ts` is the single place that is handled. It reads
+the call off a namespace and checks it at call time, so an assistant without it
+loses one step and gets a message naming the CLI command above.
+
+Two rules for calling it:
+
+- **Only from a request handler.** The host scopes the write to the plugin
+  currently executing and fails closed when there is none. A plugin's modules
+  are imported outside that context, so a call at module scope is refused.
+- **The `typeof` check proves the call exists, not that it will work.** Whether
+  the context is right is knowable only by calling, so the host's refusal is
+  reported to the user rather than pre-empted.
+
+Once the assistant release that ships `storeCredential` is out: pin
+`peerDependencies["@vellumai/plugin-api"]` in `package.json` to that version,
+delete `src/setup/plugin-api-pending.d.ts`, and fold the namespace indirection
+in `src/setup/host-credentials.ts` back into ordinary named imports.
 
 ## Publishing identity
 

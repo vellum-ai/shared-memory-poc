@@ -99,12 +99,18 @@ export async function storeToken(raw: unknown): Promise<void> {
         "Clones, fetches and pushes the team's shared knowledge repository for the shared-memory plugin.",
     });
   } catch (error) {
-    // An old host is the one failure with an action attached, so its message is
-    // carried through to the wizard rather than flattened into a generic 500.
     if (error instanceof HostTooOldError) {
       throw new SetupCredentialError("UNSUPPORTED_HOST", error.message);
     }
-    throw error;
+    // The host's own refusals name the cause — an out-of-scope field, no plugin
+    // execution context, a backend that would not write — and each one is a
+    // deployment fault someone has to act on. A generic failure here would send
+    // the user back to re-paste a token that was never the problem. None of
+    // these messages can carry the value, so passing the reason through is safe.
+    throw new SetupCredentialError(
+      "STORE_REFUSED",
+      `The assistant refused to store the token: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 

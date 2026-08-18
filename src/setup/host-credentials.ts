@@ -45,7 +45,18 @@ export async function readCredential(ref: string): Promise<string | null> {
   }
 }
 
-/** Write a credential's plaintext, creating it if it does not exist. */
+/**
+ * Write a credential's plaintext, creating it if it does not exist.
+ *
+ * **Call this from a request handler, never at module scope.** The host scopes
+ * the write to the plugin currently executing and fails closed when there is
+ * none — and a plugin's modules are imported by the loader outside that
+ * context, so a top-level call would be refused rather than run unscoped.
+ *
+ * That also means the `typeof` check below only proves the call exists, not
+ * that it will succeed. Whether the context is right is knowable only by
+ * calling it, so its refusal is reported rather than pre-empted.
+ */
 export async function writeCredential(
   ref: string,
   value: string,

@@ -252,12 +252,34 @@ describe("POST setup/credential", () => {
     expect(pluginApiFake.token).toBe("github_pat_example");
   });
 
-  test("reports a store the host refuses, without claiming it saved", async () => {
-    pluginApiFake.failNextStore(new Error("out of scope"));
+  // The host fails closed when no plugin is in context, and refuses a field
+  // outside the plugin's scope. Both are deployment faults, and both would send
+  // the user back to re-paste a token that was never the problem — so the
+  // reason is carried through rather than flattened into a generic failure.
+  test.each([
+    ["storeCredential requires an active plugin execution context", "no plugin context"],
+    ['Plugin "shared-memory" may only store credentials whose field matches', "a scope refusal"],
+  ])("passes through the host's refusal: %s (%s)", async (hostMessage) => {
+    pluginApiFake.failNextStore(new Error(hostMessage));
 
     const response = await handleSetupCredential(post({ token: "github_pat_example" }), pluginDir);
-    expect(response.status).toBe(500);
-    expect((await readBody(response)).ok).toBe(false);
+    const body = await readBody(response);
+
+    expect(response.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect((body.error as { code: string }).code).toBe("STORE_REFUSED");
+    expect((body.error as { message: string }).message).toContain(hostMessage);
+  });
+
+  test("does not report a refused store as saved", async () => {
+    pluginApiFake.failNextStore(new Error("out of scope"));
+
+    const body = await readBody(
+      await handleSetupCredential(post({ token: "github_pat_example" }), pluginDir),
+    );
+
+    expect(body.stored).toBeUndefined();
+    expect(pluginApiFake.token).toBeNull();
   });
 
   // The response is rendered in the wizard and logged by the host; neither
