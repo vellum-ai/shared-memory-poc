@@ -11,7 +11,7 @@ const SETUP_PREFIX = `${PLUGIN_PREFIX}/setup`;
 
 export type StepState = "done" | "blocked" | "pending";
 export type StepId = "repository" | "access" | "identity" | "sync";
-export type Transport = "https" | "ssh" | "unknown";
+export type Transport = "https" | "ssh" | "other" | "invalid";
 
 export interface SetupStep {
   id: StepId;

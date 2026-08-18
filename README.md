@@ -328,7 +328,14 @@ configured URL is proof the key works and the step passes; no clone means the
 step reports what is missing and offers to switch to the HTTPS address for the
 same repository.
 
-An install already syncing over SSH is therefore never asked for a token.
+Anything else git clones — a `file://` URL, a bare local path, `git://` — needs
+no credential from the plugin, so the access step stands aside and the first
+sync reports whether it works. Only a URL `readRepositoryConfig` would also
+refuse blocks the flow, so the wizard and the reader that gates sync cannot
+disagree about what is usable.
+
+An install already syncing over SSH is therefore never asked for a token, and
+the `file://` fixture repo the QA runbook builds needs nothing at all.
 
 ### The token
 

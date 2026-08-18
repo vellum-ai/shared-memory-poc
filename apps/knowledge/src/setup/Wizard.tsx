@@ -204,7 +204,8 @@ function RepositoryStep({
           <>
             An <code>https://</code> address lets this screen finish setup on its own. A{" "}
             <code>git@</code> address works too, but it authenticates with an SSH key you set up
-            outside this app.
+            outside this app. Anything else git clones — a <code>file://</code> URL or a local
+            path — works and needs no credential.
           </>
         }
       />

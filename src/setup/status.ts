@@ -87,11 +87,11 @@ function repositoryStep(repoUrl: string | null, transport: RemoteTransport): Set
       detail: "Point the plugin at the git repository that holds your team's shared knowledge.",
     };
   }
-  if (transport === "unknown") {
+  if (transport === "invalid") {
     return {
       id: "repository",
       state: "blocked",
-      detail: `${repoUrl} is not a git URL this plugin can use. Use an https:// or git@ address.`,
+      detail: "That repository URL is not usable. Use an https:// or git@ address.",
     };
   }
   return { id: "repository", state: "done", detail: repoUrl };
@@ -137,6 +137,16 @@ function accessStep(
         : "This SSH address needs a key set up on this machine and registered with GitHub.",
     };
   }
+  if (transport === "other") {
+    // A file://, git:// or local-path remote needs nothing from the vault, and
+    // the plugin cannot check it ahead of time. Standing aside is right: the
+    // alternative is holding a working install at a step with no action on it.
+    return {
+      id: "access",
+      state: "done",
+      detail: "This address needs no credential from the plugin. The first sync will show whether it works.",
+    };
+  }
   return { id: "access", state: "pending", detail: "Set a repository URL first." };
 }
 
@@ -151,7 +161,8 @@ export async function readSetupStatus(pluginDir: string): Promise<SetupStatus> {
       : "main";
 
   const remote = repoUrl === null ? null : parseRemote(repoUrl);
-  const transport = remote?.transport ?? "unknown";
+  // No URL yet reads as invalid, which is what the repository step reports on.
+  const transport: RemoteTransport = remote?.transport ?? "invalid";
   const author = readAuthor(config);
 
   const clonePresent = await pathExists(join(cloneDir(pluginDir), ".git"));

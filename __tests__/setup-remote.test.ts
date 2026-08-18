@@ -49,22 +49,36 @@ describe("parseRemote", () => {
     expect(parseRemote("https://github.com/acme/group/knowledge.git").repoPath).toBeNull();
   });
 
+  /**
+   * Git clones all of these, and none of them needs a credential from the
+   * plugin. The QA runbook's own fixture repo is a `file://` URL, so refusing
+   * them would block a configuration the project already documents.
+   */
+  test.each([
+    ["file:///tmp/shared-content-fixture", "the QA runbook's fixture"],
+    ["/srv/git/knowledge.git", "an absolute local path"],
+    ["git://example.com/knowledge.git", "the git protocol"],
+    ["not a url", "something git will fail on, left for the first sync to say"],
+  ])("accepts %p as other (%s)", (url) => {
+    expect(parseRemote(url).transport).toBe("other");
+  });
+
+  // Only what the config reader also refuses. Anything else would let the
+  // wizard and the reader that gates sync disagree about what is usable.
   test.each([
     ["", "empty"],
-    ["not a url", "prose"],
-    ["file:///tmp/repo", "a scheme git will not fetch over the network"],
-    ["ftp://example.com/repo.git", "an unsupported scheme"],
+    ["   ", "only whitespace"],
   ])("refuses %p (%s)", (url) => {
-    expect(parseRemote(url).transport).toBe("unknown");
+    expect(parseRemote(url).transport).toBe("invalid");
   });
 
   test("refuses a URL carrying a NUL byte", () => {
-    expect(parseRemote("https://github.com/acme/knowledge\0.git").transport).toBe("unknown");
+    expect(parseRemote("https://github.com/acme/knowledge\0.git").transport).toBe("invalid");
   });
 
   test("refuses a URL past the length the config reader accepts", () => {
     const long = `https://github.com/acme/${"n".repeat(2_100)}.git`;
-    expect(parseRemote(long).transport).toBe("unknown");
+    expect(parseRemote(long).transport).toBe("invalid");
   });
 });
 

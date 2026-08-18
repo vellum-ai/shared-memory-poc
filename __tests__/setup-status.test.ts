@@ -62,12 +62,53 @@ describe("readSetupStatus", () => {
     expect((await readSetupStatus(pluginDir)).branch).toBe("main");
   });
 
-  test("blocks the repository step on a URL git cannot use", async () => {
-    writeConfig({ repoUrl: "just some text" });
+  // A blank URL is normalized to "no repository" upstream, so it reports as
+  // not-started. Blocked is reserved for a value that is present and unusable —
+  // which is only what `readRepositoryConfig` also refuses.
+  test("reports a blank URL as not started rather than blocked", async () => {
+    writeConfig({ repoUrl: "   " });
+    const status = await readSetupStatus(pluginDir);
+
+    expect(status.repoUrl).toBeNull();
+    expect(step(status, "repository").state).toBe("pending");
+  });
+
+  test.each([
+    [`https://github.com/acme/${"n".repeat(2_100)}.git`, "past the length the reader accepts"],
+    ["https://github.com/acme/k\0.git", "carrying a NUL byte"],
+  ])("blocks the repository step on a URL %s", async (repoUrl) => {
+    writeConfig({ repoUrl, author: { name: "Alex", email: "alex@example.com" } });
     const status = await readSetupStatus(pluginDir);
 
     expect(step(status, "repository").state).toBe("blocked");
     expect(status.complete).toBe(false);
+  });
+
+  /**
+   * The QA runbook installs against a `file://` fixture repo, and a local
+   * remote needs no credential from the plugin. Blocking it, or holding it at
+   * an access step with no action on it, would break a documented setup.
+   */
+  test("lets a file:// repository through without asking for a credential", async () => {
+    writeConfig({
+      repoUrl: "file:///tmp/shared-content-fixture",
+      author: { name: "Alex", email: "alex@example.com" },
+    });
+    const status = await readSetupStatus(pluginDir);
+
+    expect(step(status, "repository").state).toBe("done");
+    expect(step(status, "access").state).toBe("done");
+    expect(status.tokenStored).toBe(false);
+    expect(status.complete).toBe(true);
+  });
+
+  test("does the same for a bare local path", async () => {
+    writeConfig({
+      repoUrl: "/srv/git/knowledge.git",
+      author: { name: "Alex", email: "alex@example.com" },
+    });
+
+    expect((await readSetupStatus(pluginDir)).complete).toBe(true);
   });
 
   test("an https remote needs a token before access is done", async () => {

@@ -606,13 +606,16 @@ mv "$PLUGIN_DIR/config.json" "$PLUGIN_DIR/config.json.qa"
 Expect the app to open on **Set up shared knowledge** instead of the tabs, with
 the repository step open and the rest waiting. Check each of these:
 
-1. **A bad URL is refused.** Enter `not a url` and save. Expect the repository
-   step to go amber and say it is not a git URL, and expect no `config.json` to
-   appear on disk.
-2. **An SSH URL is not asked for a token.** Enter the fixture repo's `file://`
-   or `git@` address. Expect the access step to report the SSH key path rather
-   than a token field. A `file://` fixture repo has no owner/repo, so no HTTPS
-   switch is offered — that is correct, not a bug.
+1. **The fixture repo needs no credential.** Enter the fixture's
+   `file:///tmp/shared-content-fixture` address. Expect the repository step to
+   go green and the access step to go green too, saying the address needs no
+   credential from the plugin. That is the point: a local remote authenticates
+   with nothing, so the flow stands aside rather than inventing a step. Expect
+   to reach the author step and, after filling it, the dashboard.
+2. **An SSH URL is not asked for a token.** Enter `git@github.com:you/repo.git`.
+   Expect the access step to describe an SSH key rather than show a token field,
+   and — since no clone matches that URL — to offer the HTTPS address for the
+   same repository.
 3. **An HTTPS URL asks for a token.** Enter
    `https://github.com/<you>/<any-repo>.git`. Expect a password field, and
    expect the hint to name Contents read and write.

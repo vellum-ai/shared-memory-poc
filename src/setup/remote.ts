@@ -14,10 +14,17 @@
  *
  * So the flow guides HTTPS, and leaves a working SSH install alone rather than
  * pushing a token at someone whose setup already authenticates.
+ *
+ * Everything else git accepts — a `file://` URL, a bare local path, `git://` —
+ * is `other`. Those need no credential from the plugin, and the setup flow has
+ * nothing to ask for, so it stands aside rather than blocking. Only a URL git
+ * could not use at all is `invalid`: refusing a working configuration because
+ * this module does not recognize its shape would be a worse failure than
+ * letting the first sync report the real problem.
  */
 
 /** How git will authenticate to the remote. */
-export type RemoteTransport = "https" | "ssh" | "unknown";
+export type RemoteTransport = "https" | "ssh" | "other" | "invalid";
 
 export interface ParsedRemote {
   transport: RemoteTransport;
@@ -29,8 +36,16 @@ export interface ParsedRemote {
   isGitHub: boolean;
 }
 
-const UNPARSED: ParsedRemote = {
-  transport: "unknown",
+const INVALID: ParsedRemote = {
+  transport: "invalid",
+  host: null,
+  repoPath: null,
+  isGitHub: false,
+};
+
+/** Git accepts it, but the plugin has no credential to offer for it. */
+const OTHER: ParsedRemote = {
+  transport: "other",
   host: null,
   repoPath: null,
   isGitHub: false,
@@ -65,8 +80,10 @@ function ownerRepo(path: string): string | null {
 
 export function parseRemote(repoUrl: string): ParsedRemote {
   const url = repoUrl.trim();
+  // The only refusals are the ones `readRepositoryConfig` also makes, so the
+  // wizard and the reader that gates sync agree on what is unusable.
   if (url.length === 0 || url.includes("\0") || Buffer.byteLength(url, "utf8") > MAX_URL_BYTES) {
-    return UNPARSED;
+    return INVALID;
   }
 
   const scp = SCP_LIKE.exec(url);
@@ -84,7 +101,9 @@ export function parseRemote(repoUrl: string): ParsedRemote {
   try {
     parsed = new URL(url);
   } catch {
-    return UNPARSED;
+    // Not a URL at all. Git still clones a bare local path, so this is left for
+    // the first sync to judge rather than refused here.
+    return OTHER;
   }
 
   const host = parsed.hostname.toLowerCase();
@@ -96,7 +115,8 @@ export function parseRemote(repoUrl: string): ParsedRemote {
   if (parsed.protocol === "ssh:") {
     return { transport: "ssh", host, repoPath, isGitHub: isGitHubHost(host) };
   }
-  return UNPARSED;
+  // file://, git:// and anything else git supports. No credential to collect.
+  return OTHER;
 }
 
 function isGitHubHost(host: string): boolean {
