@@ -124,9 +124,30 @@ describe("shared_memory_inspect tool contract", () => {
     expect(inspectTool.description).toContain("durable");
     expect(inspectTool.description).toContain("non-personal");
 
+    // The exclusion used to be a top-level `oneOf`, which the Anthropic API
+    // rejects outright — it fails the whole request, so every conversation
+    // broke while the plugin was installed. It is stated in the descriptions
+    // and enforced in `parseInput` instead; see __tests__/tool-schemas.test.ts
+    // for the guard, and the both/neither cases below for the enforcement.
     const schema = inspectTool.input_schema as Record<string, unknown>;
-    expect(schema.oneOf).toBeArray();
-    expect(schema.oneOf as unknown[]).toHaveLength(2);
+    expect(schema.oneOf).toBeUndefined();
+    expect(inspectTool.description).toContain("exactly one of query or paths");
+  });
+
+  /**
+   * With the schema keyword gone, `parseInput` is the only thing enforcing the
+   * exclusion, so it is tested directly rather than assumed. A tool the model
+   * can call wrongly has to refuse before it does any work.
+   */
+  test.each([
+    [{ query: "gateway", paths: ["concepts/a.md"] }, "both"],
+    [{}, "neither"],
+  ])("refuses a call passing %o (%s)", async (input) => {
+    const fixture = makeFixture();
+    const { reply, body } = await inspect(fixture, input);
+
+    expect(reply.isError).toBe(true);
+    expect(JSON.stringify(body)).toContain("exactly one");
   });
 
   test("returns the non-personal baseline when setup has no extra guidance", async () => {
