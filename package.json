@@ -3,12 +3,17 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
+  "//dependencies": "Runtime deps a deployed install genuinely needs on disk. preact is here rather than in devDependencies so `bun install --production` on a deployed clone installs it — the assistant's monitor builds apps/knowledge/src against it.",
+  "dependencies": {
+    "preact": "^10.29.8"
+  },
+  "//peerDependencies": "Supplied by the host as a generated shim in the workspace's node_modules. It must NEVER be installed into this plugin's own node_modules on a deployed install: Node resolves the nearest copy, so a real package here shadows the host shim and every host-injected function resolves to undefined. See README, 'Installing dependencies on a deployed install'.",
   "peerDependencies": {
     "@vellumai/plugin-api": "^0.11.0"
   },
+  "//devDependencies": "Local development only — typechecking and tests. The plugin-api entry here is what a bare `bun install` would wrongly place in a deployed install's node_modules.",
   "devDependencies": {
     "@types/bun": "^1.3.14",
-    "@vellumai/plugin-api": "^0.11.0",
-    "preact": "^10.29.8"
+    "@vellumai/plugin-api": "^0.11.0"
   }
 }

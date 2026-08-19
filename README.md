@@ -514,3 +514,36 @@ bunx tsc --noEmit
 
 A `git status` that is dirty after those two commands means a dependency
 changed, not that the loop is untidy.
+
+### Installing dependencies on a deployed install
+
+On a deployed clone, install with `--production`:
+
+```bash
+bun install --production
+```
+
+A bare `bun install` there is actively harmful. It installs devDependencies,
+one of which is `@vellumai/plugin-api` — and the host supplies that package as
+a generated shim in the *workspace's* `node_modules`, rebuilt at boot from the
+running assistant's own export list. Node resolves the nearest `node_modules`
+first, so a real copy inside the plugin directory silently wins. The published
+package lags the assistant, so every host function newer than the last npm
+release then resolves to `undefined`.
+
+The symptom is worse than a crash: the plugin looks like it is running on an
+old assistant. This flow reported "this assistant cannot store a credential for
+a plugin yet" on an assistant that could, because `storeCredential` was present
+in the shim and absent from the shadowing 0.11.3 package.
+
+`preact` is a real dependency rather than a devDependency precisely so
+`--production` still installs it — the assistant's monitor builds
+`apps/knowledge/src` against it on the deployed install. `__tests__/packaging.test.ts`
+holds that arrangement in place.
+
+If a deployed install starts behaving as though the host is out of date, check
+this first:
+
+```bash
+ls plugins/shared-memory/node_modules/@vellumai   # should not exist
+```
