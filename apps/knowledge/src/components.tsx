@@ -122,26 +122,32 @@ export function PathChip({ path }: { path: string }) {
  * The app's only button style, in three weights. Everything that submits,
  * advances or dismisses uses this, so a new surface cannot introduce a fourth
  * kind of button by accident.
+ *
+ * Always `type="button"`, and deliberately not configurable. A plugin app runs
+ * in an iframe sandboxed as `allow-scripts allow-popups
+ * allow-popups-to-escape-sandbox` — no `allow-forms` — so the browser blocks
+ * form submission outright and the `onSubmit` handler never runs. A submit
+ * button inside a `<form>` therefore does nothing at all, with the only
+ * evidence a console line the user will never see. Everything here is wired
+ * with `onClick`; `Field` carries `onEnter` for keyboard submit.
  */
 export function Button({
   children,
   onClick,
   variant = "secondary",
-  type = "button",
   disabled,
   busy,
 }: {
   children: ReactNode;
   onClick?: () => void;
   variant?: "primary" | "secondary" | "quiet";
-  type?: "button" | "submit";
   disabled?: boolean;
   busy?: boolean;
 }) {
   return (
     <button
       class={`btn btn-${variant}`}
-      type={type}
+      type="button"
       onClick={onClick}
       // A busy button stays disabled so a slow route cannot be submitted twice,
       // and `aria-busy` tells a screen reader why it stopped responding.
@@ -166,6 +172,7 @@ export function Field({
   label,
   value,
   onInput,
+  onEnter,
   type = "text",
   placeholder,
   hint,
@@ -176,6 +183,12 @@ export function Field({
   label: string;
   value: string;
   onInput: (value: string) => void;
+  /**
+   * Called on Enter. Plugin apps run in an iframe sandboxed without
+   * `allow-forms`, so a real `<form>` submit is blocked by the browser and its
+   * handler never runs — this is what puts Enter back.
+   */
+  onEnter?: () => void;
   type?: "text" | "password" | "email";
   placeholder?: string;
   hint?: ReactNode;
@@ -201,6 +214,12 @@ export function Field({
         aria-describedby={describedBy}
         aria-invalid={error ? "true" : undefined}
         onInput={(event) => onInput((event.target as HTMLInputElement).value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && onEnter) {
+            event.preventDefault();
+            onEnter();
+          }
+        }}
       />
       {hint ? (
         <p class="field-hint" id={hintId}>

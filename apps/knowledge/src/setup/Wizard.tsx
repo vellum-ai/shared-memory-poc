@@ -186,42 +186,34 @@ function RepositoryStep({
   const [branch, setBranch] = useState(status.branch);
   const { busy, failure, submit } = useSubmit(onStatus);
 
+  const save = () => {
+    void submit(() => saveSetupConfig({ repoUrl, branch }));
+  };
+
   return (
-    <form
-      class="step-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void submit(() => saveSetupConfig({ repoUrl, branch }));
-      }}
-    >
+    <div class="step-form">
       <Field
         id="setup-repo-url"
         label="Repository URL"
         value={repoUrl}
         onInput={setRepoUrl}
+        onEnter={save}
         placeholder="https://github.com/your-org/your-shared-knowledge.git"
-        hint={
-          <>
-            An <code>https://</code> address lets this screen finish setup on its own. A{" "}
-            <code>git@</code> address works too, but it authenticates with an SSH key you set up
-            outside this app. Anything else git clones — a <code>file://</code> URL or a local
-            path — works and needs no credential.
-          </>
-        }
       />
       <Field
         id="setup-branch"
         label="Branch"
         value={branch}
         onInput={setBranch}
+        onEnter={save}
         placeholder="main"
         hint="The branch shared content is read from and published to."
       />
       {failure ? <p class="step-failure" role="alert">{failure}</p> : null}
-      <Button variant="primary" type="submit" busy={busy}>
+      <Button variant="primary" onClick={save} busy={busy}>
         {busy ? "Saving…" : "Save repository"}
       </Button>
-    </form>
+    </div>
   );
 }
 
@@ -268,23 +260,21 @@ function AccessStep({
     );
   }
 
+  const save = () => {
+    void submit(
+      () => saveSetupToken(token),
+      (result) => {
+        setNote(result.message ?? null);
+        setNoteBad(!result.verified);
+        // The value is in the vault now, so holding it in the field would only
+        // keep a second copy alive in the page.
+        if (result.verified) setToken("");
+      },
+    );
+  };
+
   return (
-    <form
-      class="step-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void submit(
-          () => saveSetupToken(token),
-          (result) => {
-            setNote(result.message ?? null);
-            setNoteBad(!result.verified);
-            // The value is in the vault now, so holding it in the form would
-            // only keep a second copy alive in the page.
-            if (result.verified) setToken("");
-          },
-        );
-      }}
-    >
+    <div class="step-form">
       <p class="step-note">
         Create a token at{" "}
         <a href={TOKEN_DOCS} target="_blank" rel="noreferrer">
@@ -300,6 +290,7 @@ function AccessStep({
         type="password"
         value={token}
         onInput={setToken}
+        onEnter={save}
         placeholder="github_pat_… or ghp_…"
         autocomplete="off"
         hint="Stored in the assistant's encrypted vault, never in the plugin's config file."
@@ -310,10 +301,10 @@ function AccessStep({
           {note}
         </p>
       ) : null}
-      <Button variant="primary" type="submit" busy={busy}>
+      <Button variant="primary" onClick={save} busy={busy}>
         {busy ? "Checking…" : "Save and check token"}
       </Button>
-    </form>
+    </div>
   );
 }
 
@@ -328,14 +319,12 @@ function IdentityStep({
   const [email, setEmail] = useState(status.author?.email ?? "");
   const { busy, failure, submit } = useSubmit(onStatus);
 
+  const save = () => {
+    void submit(() => saveSetupConfig({ author: { name, email } }));
+  };
+
   return (
-    <form
-      class="step-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void submit(() => saveSetupConfig({ author: { name, email } }));
-      }}
-    >
+    <div class="step-form">
       <p class="step-note">
         Commits this assistant publishes are attributed to you, so your team can see who shared
         what. The assistant is recorded separately as the committer.
@@ -345,6 +334,7 @@ function IdentityStep({
         label="Name"
         value={name}
         onInput={setName}
+        onEnter={save}
         placeholder="Alex Chen"
       />
       <Field
@@ -353,13 +343,14 @@ function IdentityStep({
         type="email"
         value={email}
         onInput={setEmail}
+        onEnter={save}
         placeholder="alex@example.com"
       />
       {failure ? <p class="step-failure" role="alert">{failure}</p> : null}
-      <Button variant="primary" type="submit" busy={busy}>
+      <Button variant="primary" onClick={save} busy={busy}>
         {busy ? "Saving…" : "Save author"}
       </Button>
-    </form>
+    </div>
   );
 }
 
